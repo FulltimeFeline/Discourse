@@ -387,6 +387,21 @@ final class MatrixService: @unchecked Sendable {
         return (bridge.stream, [bridge, handle])
     }
 
+    private var cachedVerificationController: SessionVerificationController?
+
+    /// One shared controller for the whole session. `getSessionVerificationController`
+    /// mints a NEW controller each call, and separate controllers get separate
+    /// delegates, so the active flow's accept/emoji events land on the incoming
+    /// watcher's delegate instead — stalling verification. Sharing one instance
+    /// keeps every event on the currently-set delegate.
+    @MainActor
+    func sessionVerificationController() async throws -> SessionVerificationController {
+        if let cachedVerificationController { return cachedVerificationController }
+        let controller = try await client.getSessionVerificationController()
+        cachedVerificationController = controller
+        return controller
+    }
+
     func recover(recoveryKey: String) async throws {
         try await client.encryption().recover(recoveryKey: recoveryKey)
     }

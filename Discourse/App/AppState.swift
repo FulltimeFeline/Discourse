@@ -411,7 +411,7 @@ final class SessionScope {
     /// Delegate on the session-verification controller, so requests from other
     /// devices surface here.
     func watchForIncomingVerification() async {
-        guard let controller = try? await service.client.getSessionVerificationController() else { return }
+        guard let controller = try? await service.sessionVerificationController() else { return }
         let bridge = SessionVerificationDelegateBridge()
         verificationDelegateBridge = bridge
         controller.setDelegate(delegate: bridge)

@@ -24,6 +24,20 @@ struct SidebarView: View {
     @Binding var activeSheet: NewChatSheet?
     @Binding var showsVerification: Bool
     @FocusState private var isSearchFocused: Bool
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    #endif
+
+    /// The room list sits beside the timeline only in the three-pane layouts
+    /// (macOS, iPad). On iPhone the chat slides over as a full layer, so the
+    /// column boundary would just draw a stray line over the header.
+    private var showsColumnBoundary: Bool {
+        #if os(iOS)
+        horizontalSizeClass == .regular
+        #else
+        true
+        #endif
+    }
 
     /// Invites are account-level, not space-level, so they show in every space.
     private var invites: [RoomSummary] {
@@ -312,12 +326,14 @@ struct SidebarView: View {
                     Text("You'll need an invite to rejoin a private room.")
                 }
             }
-            // Column boundary against the chat.
+            // Column boundary against the chat (three-pane layouts only).
             .overlay(alignment: .trailing) {
-                Rectangle()
-                    .fill(columnDividerColor)
-                    .frame(width: 0.5)
-                    .ignoresSafeArea()
+                if showsColumnBoundary {
+                    Rectangle()
+                        .fill(columnDividerColor)
+                        .frame(width: 0.5)
+                        .ignoresSafeArea()
+                }
             }
             // View ▸ Filter Rooms (⌘⇧F).
             .onChange(of: appState.sidebarFilterFocusRequest) {

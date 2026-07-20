@@ -55,7 +55,7 @@ final class VerificationViewModel {
     }
 
     private func attachController() async throws {
-        let controller = try await service.client.getSessionVerificationController()
+        let controller = try await service.sessionVerificationController()
         self.controller = controller
         let bridge = SessionVerificationDelegateBridge()
         self.bridge = bridge
