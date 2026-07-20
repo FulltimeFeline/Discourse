@@ -243,7 +243,6 @@ struct SidebarView: View {
                     Color.platformWindowBackground.ignoresSafeArea(edges: .top)
                     #endif
                 }
-                .overlay(alignment: .bottom) { Divider() }
             }
             .task(id: viewModel.selectedSpaceId) {
                 if let spaceId = viewModel.selectedSpaceId {
