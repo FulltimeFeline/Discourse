@@ -75,7 +75,7 @@ final class CallViewModel: Identifiable {
                 widgetSettings: settings,
                 room: room,
                 props: ClientProperties(
-                    clientId: "com.rileylopezsantana.discourse",
+                    clientId: "com.riiiiiiiley.discourse",
                     languageTag: nil,
                     theme: nil
                 )

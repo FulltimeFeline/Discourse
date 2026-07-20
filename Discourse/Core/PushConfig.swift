@@ -21,14 +21,14 @@ enum PushConfig {
     /// Keychain access group (the app's team-prefixed group) so the extension
     /// can read the restoration token. Resolved at runtime from the app's own
     /// keychain-access-groups entitlement, so no team id is hardcoded here.
-    static let keychainAccessGroup = "com.rileylopezsantana.Discourse.shared"
+    static let keychainAccessGroup = "com.riiiiiiiley.Discourse.shared"
 
     /// Matrix pusher app id (APNs). Must match the gateway's app config.
-    static let appId = "com.rileylopezsantana.Discourse"
+    static let appId = "com.riiiiiiiley.Discourse"
 
     /// The sygnal `/_matrix/push/v1/notify` endpoint.
     static let pushGatewayURL = "https://push.fulltimefeline.com/_matrix/push/v1/notify"
 
     /// The extension's bundle id, for logging/diagnostics.
-    static let serviceExtensionBundleId = "com.rileylopezsantana.Discourse.NSE"
+    static let serviceExtensionBundleId = "com.riiiiiiiley.Discourse.NSE"
 }

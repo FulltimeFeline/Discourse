@@ -23,7 +23,7 @@ struct RestorationToken: Codable, Equatable {
 /// Persists restoration tokens (one per account) in the keychain and owns the
 /// per-session store directories inside the sandbox container.
 struct SessionStore {
-    private static let service = "com.rileylopezsantana.Discourse"
+    private static let service = "com.riiiiiiiley.Discourse"
     private static let account = "sessions"
     private static let legacyAccount = "activeSession"
     private static let activeUserDefaultsKey = "activeUserId"

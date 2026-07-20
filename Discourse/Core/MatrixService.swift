@@ -547,7 +547,7 @@ final class MatrixService: @unchecked Sendable {
 final class PendingLogin: @unchecked Sendable {
     // Reverse-DNS (dotted) scheme: MAS rejects single-word private-use schemes
     // like "discourse" during client registration (RFC 8252 §7.1).
-    static let callbackScheme = "com.rileylopezsantana.discourse"
+    static let callbackScheme = "com.riiiiiiiley.discourse"
     static let oauthRedirectURL = "\(callbackScheme):/oauth-callback"
     static let ssoRedirectURL = "\(callbackScheme):/sso-callback"
 
@@ -593,7 +593,7 @@ final class PendingLogin: @unchecked Sendable {
             oauthConfiguration: OAuthConfiguration(
                 clientName: "Discourse",
                 redirectUri: Self.oauthRedirectURL,
-                clientUri: "https://github.com/rileylopezsantana/discourse",
+                clientUri: "https://github.com/riiiiiiiley/Discourse",
                 logoUri: nil,
                 tosUri: nil,
                 policyUri: nil,

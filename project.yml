@@ -1,6 +1,6 @@
 name: Discourse
 options:
-  bundleIdPrefix: com.rileylopezsantana
+  bundleIdPrefix: com.riiiiiiiley
   deploymentTarget:
     macOS: "26.0"
     iOS: "26.0"
@@ -26,7 +26,7 @@ targets:
       - package: MatrixRustSDK
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.rileylopezsantana.Discourse
+        PRODUCT_BUNDLE_IDENTIFIER: com.riiiiiiiley.Discourse
         SWIFT_VERSION: "6.0"
         CODE_SIGN_ENTITLEMENTS: Discourse.entitlements
         CODE_SIGN_STYLE: Manual
@@ -47,7 +47,7 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: OAuth Callback
             CFBundleURLSchemes:
-              - com.rileylopezsantana.discourse
+              - com.riiiiiiiley.discourse
         NSMicrophoneUsageDescription: Discourse uses the microphone for voice and video calls and voice messages.
         NSLocationUsageDescription: Discourse uses your location only when you choose to share it in a chat.
         NSLocationWhenInUseUsageDescription: Discourse uses your location only when you choose to share it in a chat.
@@ -68,7 +68,7 @@ targets:
       - package: MatrixRustSDK
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.rileylopezsantana.Discourse.NSE
+        PRODUCT_BUNDLE_IDENTIFIER: com.riiiiiiiley.Discourse.NSE
         PRODUCT_NAME: DiscourseNSE
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
@@ -101,7 +101,7 @@ targets:
         embed: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.rileylopezsantana.Discourse
+        PRODUCT_BUNDLE_IDENTIFIER: com.riiiiiiiley.Discourse
         PRODUCT_NAME: Discourse
         SWIFT_VERSION: "6.0"
         CODE_SIGN_STYLE: Automatic
@@ -129,7 +129,7 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: OAuth Callback
             CFBundleURLSchemes:
-              - com.rileylopezsantana.discourse
+              - com.riiiiiiiley.discourse
         NSMicrophoneUsageDescription: Discourse uses the microphone for voice and video calls and voice messages.
         NSLocationUsageDescription: Discourse uses your location only when you choose to share it in a chat.
         NSLocationWhenInUseUsageDescription: Discourse uses your location only when you choose to share it in a chat.
