@@ -105,6 +105,15 @@ final class MatrixService: @unchecked Sendable {
     /// Debounce so a burst of send errors schedules one re-enable.
     private var queueReenableScheduled = false
 
+    #if os(macOS)
+    /// Held while sync runs so App Nap can't throttle the sliding-sync long-poll
+    /// when the window is minimized or occluded — otherwise room keys stop
+    /// arriving and encrypted messages stick at "waiting to decrypt" until the
+    /// app is relaunched. Allows idle system sleep (we only need networking, not
+    /// to keep the Mac awake).
+    private var backgroundActivity: NSObjectProtocol?
+    #endif
+
     fileprivate init(client: Client, sessionDelegate: SessionDelegate? = nil) throws {
         self.client = client
         self.sessionDelegate = sessionDelegate
@@ -117,6 +126,13 @@ final class MatrixService: @unchecked Sendable {
     @MainActor
     func startSync() async throws {
         guard syncService == nil else { return }
+        #if os(macOS)
+        if backgroundActivity == nil {
+            backgroundActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Keep Matrix sync running while the window is occluded")
+        }
+        #endif
         // Offline mode: the SDK serves cached data and reports `.offline`
         // (which the room list already renders) instead of churning `.error`
         // while the network is down.
@@ -406,6 +422,21 @@ final class MatrixService: @unchecked Sendable {
         try await client.encryption().recover(recoveryKey: recoveryKey)
     }
 
+    /// Reads a room's custom state event content — the FFI exposes no state
+    /// reader, so this hits the client-server API directly. nil = absent/error.
+    func stateEventContent(roomId: String, type: String) async -> [String: Any]? {
+        guard let session = try? client.session(),
+              let base = URL(string: session.homeserverUrl) else { return nil }
+        let url = base.appending(path: "_matrix/client/v3/rooms/\(roomId)/state/\(type)")
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return json
+    }
+
     // MARK: Session lifecycle
 
     /// Phase 1 of login: build a client for the homeserver and discover which
@@ -468,6 +499,12 @@ final class MatrixService: @unchecked Sendable {
     func logOut() async {
         syncMonitorTask?.cancel()
         sendQueueTask?.cancel()
+        #if os(macOS)
+        if let backgroundActivity {
+            ProcessInfo.processInfo.endActivity(backgroundActivity)
+            self.backgroundActivity = nil
+        }
+        #endif
         await syncService?.stop()
         // Give recent message keys a chance to reach key backup before the
         // store is destroyed — otherwise those messages are unrecoverable on

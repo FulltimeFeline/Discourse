@@ -12,11 +12,11 @@ enum PushConfig {
     /// While off, the app uses the plain keychain and app-support store so
     /// sign-in works without those entitlements. Flip to true once both the
     /// gateway (`pushGatewayURL`) and the capabilities are set up.
-    static let enabled = false
+    static let enabled = true
 
     /// App Group shared by the main app and the extension, so the extension can
     /// open the same session/crypto store and decrypt the pushed event.
-    static let appGroup = "group.com.rileylopezsantana.Discourse"
+    static let appGroup = "group.com.riiiiiiiley.Discourse"
 
     /// Keychain access group (the app's team-prefixed group) so the extension
     /// can read the restoration token. Resolved at runtime from the app's own
@@ -26,8 +26,8 @@ enum PushConfig {
     /// Matrix pusher app id (APNs). Must match the gateway's app config.
     static let appId = "com.rileylopezsantana.Discourse"
 
-    /// The sygnal `/_matrix/push/v1/notify` endpoint. Fill in your gateway.
-    static let pushGatewayURL = "https://push.example.com/_matrix/push/v1/notify"
+    /// The sygnal `/_matrix/push/v1/notify` endpoint.
+    static let pushGatewayURL = "https://push.fulltimefeline.com/_matrix/push/v1/notify"
 
     /// The extension's bundle id, for logging/diagnostics.
     static let serviceExtensionBundleId = "com.rileylopezsantana.Discourse.NSE"

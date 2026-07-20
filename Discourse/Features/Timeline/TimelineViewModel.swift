@@ -250,16 +250,18 @@ final class TimelineViewModel {
         }
         var avatarURL: String?
         var role: Role = .member
+        var powerLevel: Int = 0
         /// `name` case/diacritic-folded for mention-autocomplete matching.
         var foldedName: String = ""
         var name: String { displayName ?? id }
 
         init(id: String, displayName: String? = nil, avatarURL: String? = nil,
-             role: Role = .member) {
+             role: Role = .member, powerLevel: Int = 0) {
             self.id = id
             self.displayName = displayName
             self.avatarURL = avatarURL
             self.role = role
+            self.powerLevel = powerLevel
             self.foldedName = RoomSummary.foldedForSearch(displayName ?? id)
         }
     }
@@ -990,15 +992,51 @@ final class TimelineViewModel {
                     case .moderator: .moderator
                     case .user: .member
                     }
+                    let level: Int = switch $0.powerLevel {
+                    case .infinite: Int.max
+                    case .value(let value): Int(value)
+                    }
                     return MemberItem(id: $0.userId, displayName: $0.displayName,
-                                      avatarURL: $0.avatarUrl, role: role)
+                                      avatarURL: $0.avatarUrl, role: role,
+                                      powerLevel: level)
                 })
         }
         members = all.sorted {
-            if $0.role != $1.role { return $0.role < $1.role }
+            if $0.powerLevel != $1.powerLevel { return $0.powerLevel > $1.powerLevel }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
         membersById = Dictionary(members.map { ($0.id, $0) }) { first, _ in first }
+        await loadPowerLevelTags()
+    }
+
+    // MARK: Named roles (in.cinny.room.power_level_tags)
+
+    private(set) var powerLevelTags: [Int: PowerLevelTag] = [:]
+
+    private func loadPowerLevelTags() async {
+        guard let content = await service?.stateEventContent(
+            roomId: roomId, type: PowerLevelTags.eventType) else { return }
+        let parsed = PowerLevelTags.parse(content)
+        if powerLevelTags != parsed { powerLevelTags = parsed }
+    }
+
+    /// The named role for a power level — the room's tag, or a default label.
+    func roleTag(forLevel level: Int) -> PowerLevelTag {
+        PowerLevelTags.displayTag(forLevel: level, in: powerLevelTags)
+    }
+
+    /// Writes the whole tag map. Returns an error message on failure.
+    func savePowerLevelTags(_ tags: [Int: PowerLevelTag]) async -> String? {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: PowerLevelTags.content(from: tags))
+            let json = String(data: data, encoding: .utf8) ?? "{}"
+            _ = try await room.sendStateEventRaw(
+                eventType: PowerLevelTags.eventType, stateKey: "", content: json)
+            powerLevelTags = tags
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     /// Opens (or creates) a DM with a member; returns the room ID to select.

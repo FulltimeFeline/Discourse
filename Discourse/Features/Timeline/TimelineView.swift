@@ -1078,6 +1078,26 @@ private struct MediaThumbCell: View {
 
 /// Member column as a native inspector: search, role-grouped, DM from the
 /// context menu.
+/// A named role: its emoji (unicode or custom emote) and its name in the tag color.
+struct RoleTagLabel: View {
+    let tag: PowerLevelTag
+    var loader: MediaLoader?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let key = tag.iconKey, !key.isEmpty {
+                if tag.iconIsMxc {
+                    EmoteImageView(url: key, size: 15, loader: loader)
+                } else {
+                    Text(key)
+                }
+            }
+            Text(tag.name)
+                .foregroundStyle(Color(hex: tag.color) ?? .secondary)
+        }
+    }
+}
+
 struct MemberListView: View {
     let viewModel: TimelineViewModel
     @Environment(AppState.self) private var appState
@@ -1104,38 +1124,35 @@ struct MemberListView: View {
         }
     }
 
-    static func roleGroups(of members: [TimelineViewModel.MemberItem])
-        -> [(role: TimelineViewModel.MemberItem.Role, title: LocalizedStringKey, members: [TimelineViewModel.MemberItem])] {
-        let roles: [(TimelineViewModel.MemberItem.Role, LocalizedStringKey)] = [
-            (.creator, "Creator"), (.administrator, "Admins"),
-            (.moderator, "Moderators"), (.member, "Members"),
-        ]
-        return roles.compactMap { role, title in
-            let group = members.filter { $0.role == role }
-            return group.isEmpty ? nil : (role, title, group)
-        }
+    /// Members grouped by their actual power level, highest first — each level
+    /// is a named role via `in.cinny.room.power_level_tags`.
+    static func memberGroups(of members: [TimelineViewModel.MemberItem])
+        -> [(level: Int, members: [TimelineViewModel.MemberItem])] {
+        Dictionary(grouping: members, by: \.powerLevel)
+            .sorted { $0.key > $1.key }
+            .map { (level: $0.key, members: $0.value) }
     }
 
     private var filtered: [TimelineViewModel.MemberItem] {
         Self.filteredMembers(viewModel.members, matching: query)
     }
 
-    private var groups: [(role: TimelineViewModel.MemberItem.Role, title: LocalizedStringKey, members: [TimelineViewModel.MemberItem])] {
-        Self.roleGroups(of: filtered)
+    private var groups: [(level: Int, members: [TimelineViewModel.MemberItem])] {
+        Self.memberGroups(of: filtered)
     }
 
     var body: some View {
         List {
             // Headers as plain rows: List section headers draw a divider that
             // can't be turned off.
-            ForEach(groups, id: \.role) { group in
+            ForEach(groups, id: \.level) { group in
                 HStack(spacing: 4) {
-                    Text(group.title)
+                    RoleTagLabel(tag: viewModel.roleTag(forLevel: group.level),
+                                 loader: viewModel.mediaLoader)
                     Text("— \(group.members.count)")
                         .foregroundStyle(.tertiary)
                 }
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
                 .listRowSeparator(.hidden)
                 .padding(.top, 6)
                 ForEach(group.members) { member in
@@ -1356,8 +1373,8 @@ private struct RoomDetailsSheet: View {
     @State private var moderation: MemberListView.ModerationAction?
     @State private var moderationError: String?
 
-    private var groups: [(role: TimelineViewModel.MemberItem.Role, title: LocalizedStringKey, members: [TimelineViewModel.MemberItem])] {
-        MemberListView.roleGroups(
+    private var groups: [(level: Int, members: [TimelineViewModel.MemberItem])] {
+        MemberListView.memberGroups(
             of: MemberListView.filteredMembers(viewModel.members, matching: query))
     }
 
@@ -1493,14 +1510,15 @@ private struct RoomDetailsSheet: View {
                     .listRowBackground(Color.clear)
             }
         } else {
-            ForEach(groups, id: \.role) { group in
+            ForEach(groups, id: \.level) { group in
                 Section {
                     ForEach(group.members) { member in
                         memberRow(member)
                     }
                 } header: {
                     HStack {
-                        Text(group.title)
+                        RoleTagLabel(tag: viewModel.roleTag(forLevel: group.level),
+                                     loader: viewModel.mediaLoader)
                         Text("\(group.members.count)")
                             .foregroundStyle(.tertiary)
                     }

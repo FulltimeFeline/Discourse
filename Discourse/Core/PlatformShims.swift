@@ -40,6 +40,18 @@ extension View {
 }
 
 extension Color {
+    /// `#rrggbb` / `#rgb` (with or without `#`). nil-initializer for optional use.
+    init?(hex: String?) {
+        guard var hex = hex?.trimmingCharacters(in: .whitespaces) else { return nil }
+        if hex.hasPrefix("#") { hex.removeFirst() }
+        if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
+        guard hex.count == 6, let value = UInt64(hex, radix: 16) else { return nil }
+        self = Color(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255)
+    }
+
     static var platformWindowBackground: Color {
         #if os(macOS)
         Color(nsColor: .windowBackgroundColor)

@@ -155,6 +155,8 @@ final class RoomSettingsModel {
     var roomVersion = "?"
     var privilegedUsers: [(userId: String, level: Int64)] = []
     var permissionValues: RoomPowerLevelsValues?
+    /// Named roles (in.cinny.room.power_level_tags), power level → tag.
+    var powerLevelTags: [Int: PowerLevelTag] = [:]
     var errorMessage: String?
     var infoMessage: String?
 
@@ -241,6 +243,28 @@ final class RoomSettingsModel {
                 && levels.canOwnUserSendState(stateEvent: .roomHistoryVisibility)
             canEditAddresses = levels.canOwnUserSendState(stateEvent: .roomCanonicalAlias)
             canEditRoles = levels.canOwnUserSendState(stateEvent: .roomPowerLevels)
+        }
+
+        if let content = await scope.service.stateEventContent(
+            roomId: target.roomId, type: PowerLevelTags.eventType) {
+            powerLevelTags = PowerLevelTags.parse(content)
+        }
+    }
+
+    func roleTag(forLevel level: Int) -> PowerLevelTag {
+        powerLevelTags[level] ?? PowerLevelTags.defaultTag(forLevel: level)
+    }
+
+    /// Persists the named-role labels (in.cinny.room.power_level_tags).
+    func savePowerLevelTags() {
+        // Drop tags equal to their default so the event only carries edits.
+        let tags = powerLevelTags.filter { $0.value != PowerLevelTags.defaultTag(forLevel: $0.key) }
+        run { [self] in
+            guard let room else { return }
+            let data = try JSONSerialization.data(withJSONObject: PowerLevelTags.content(from: tags))
+            _ = try await room.sendStateEventRaw(
+                eventType: PowerLevelTags.eventType, stateKey: "",
+                content: String(data: data, encoding: .utf8) ?? "{}")
         }
     }
 
@@ -671,6 +695,11 @@ private struct RolesSettingsTab: View {
             }
         }
 
+        if model.canEditRoles {
+            Divider()
+            RoleLabelsEditor(model: model)
+        }
+
         Divider()
 
         Text("Permissions").font(.headline)
@@ -686,6 +715,96 @@ private struct RolesSettingsTab: View {
         }
 
         statusMessages(model)
+    }
+}
+
+/// Names, colors, and emoji for each power level — writes the Cinny-compatible
+/// `in.cinny.room.power_level_tags` event.
+private struct RoleLabelsEditor: View {
+    @Bindable var model: RoomSettingsModel
+    @State private var emojiLevel: Int?
+
+    private static let palette = ["#e64980", "#f76707", "#f59f00", "#37b24d",
+                                  "#1c7ed6", "#7048e8", "#ae3ec9", "#868e96"]
+
+    private var levels: [Int] {
+        var set = Set([0, 50, 100])
+        set.formUnion(model.privilegedUsers.map { Int($0.level) })
+        set.formUnion(model.powerLevelTags.keys)
+        return set.sorted(by: >)
+    }
+
+    private func tag(_ level: Int) -> Binding<PowerLevelTag> {
+        Binding(get: { model.roleTag(forLevel: level) },
+                set: { model.powerLevelTags[level] = $0 })
+    }
+
+    var body: some View {
+        Text("Role labels").font(.headline)
+        Text("Name, color, and emoji per power level. Names and colors interop with Cinny.")
+            .font(.callout).foregroundStyle(.secondary)
+
+        ForEach(levels, id: \.self) { level in
+            let binding = tag(level)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Button { emojiLevel = level } label: {
+                        iconPreview(binding.wrappedValue)
+                            .frame(width: 26, height: 26)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: Binding(get: { emojiLevel == level },
+                                                  set: { if !$0 { emojiLevel = nil } })) {
+                        EmojiPickerView(
+                            customPacks: model.scope.customEmoji.packs,
+                            loader: model.scope.mediaLoader,
+                            insertCustom: { emote in
+                                binding.wrappedValue.iconKey = emote.url
+                                emojiLevel = nil
+                            },
+                            insert: { emoji in
+                                binding.wrappedValue.iconKey = emoji
+                                emojiLevel = nil
+                            })
+                        .frame(width: 320, height: 360)
+                    }
+                    TextField("Level \(level)", text: binding.name)
+                        .textFieldStyle(.roundedBorder)
+                    Text(verbatim: "\(level)").foregroundStyle(.tertiary).monospacedDigit()
+                }
+                HStack(spacing: 6) {
+                    ForEach(Self.palette, id: \.self) { hex in
+                        Circle()
+                            .fill(Color(hex: hex) ?? .gray)
+                            .frame(width: 18, height: 18)
+                            .overlay(Circle().strokeBorder(.primary,
+                                     lineWidth: binding.wrappedValue.color == hex ? 2 : 0))
+                            .onTapGesture { binding.wrappedValue.color = hex }
+                    }
+                    Button { binding.wrappedValue.color = nil } label: {
+                        Image(systemName: "slash.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .help("No color")
+                }
+            }
+        }
+
+        Button("Save labels") { model.savePowerLevelTags() }
+    }
+
+    @ViewBuilder
+    private func iconPreview(_ tag: PowerLevelTag) -> some View {
+        if let key = tag.iconKey, !key.isEmpty {
+            if tag.iconIsMxc {
+                EmoteImageView(url: key, size: 22, loader: model.scope.mediaLoader)
+            } else {
+                Text(key)
+            }
+        } else {
+            Image(systemName: "face.smiling").foregroundStyle(.secondary)
+        }
     }
 }
 
