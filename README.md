@@ -22,7 +22,7 @@ use of the larger screen.
 
 ## Screenshots
 
-![Discourse on macOS](screenshots/macos.png)
+![Discourse on macOS](screenshots/macos1.png)
 
 | Room list | Conversation |
 | :---: | :---: |
