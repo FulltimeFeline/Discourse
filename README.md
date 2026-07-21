@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="screenshots/icon.png" alt="Discourse app icon" width="128" height="128">
+</p>
+
 # Discourse for Matrix
 
 Discourse is a native [Matrix](https://matrix.org) client for macOS and iOS,
