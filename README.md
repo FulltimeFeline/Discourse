@@ -88,6 +88,30 @@ it at any LiveKit deployment:
 }
 ```
 
+## Specs
+
+Beyond the stable Matrix spec, Discourse leans on a handful of proposals (MSCs):
+
+- [MSC3575](https://github.com/matrix-org/matrix-spec-proposals/pull/3575) Sliding
+  Sync, the sync engine everything is built on.
+- [MSC2545](https://github.com/matrix-org/matrix-spec-proposals/pull/2545) image
+  packs, for custom emoji and stickers.
+- [MSC4133](https://github.com/matrix-org/matrix-spec-proposals/pull/4133) extended
+  profiles and [MSC4175](https://github.com/matrix-org/matrix-spec-proposals/pull/4175)
+  profile timezone, backing the bio / pronouns / status / timezone / banner / links.
+- [MSC2666](https://github.com/matrix-org/matrix-spec-proposals/pull/2666) mutual
+  rooms, for the shared-rooms list on profiles.
+- [MSC3401](https://github.com/matrix-org/matrix-spec-proposals/pull/3401) native
+  group calls and [MSC4143](https://github.com/matrix-org/matrix-spec-proposals/pull/4143)
+  MatrixRTC transports (LiveKit SFU discovery), with
+  [MSC4140](https://github.com/matrix-org/matrix-spec-proposals/pull/4140) delayed
+  events keeping call membership alive.
+- [MSC2762](https://github.com/matrix-org/matrix-spec-proposals/pull/2762) widget
+  API, which is how Element Call is embedded and driven.
+
+Which of these actually work depends on your homeserver implementing them; the
+client degrades gracefully when one is missing.
+
 ## Requirements
 
 - Xcode 26. The deployment target is macOS 26 / iOS 26, and the UI uses the
