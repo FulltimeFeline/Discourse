@@ -31,6 +31,9 @@ struct RoomSummary: Identifiable, Hashable, Sendable {
     var isFavourite: Bool = false
     var isLowPriority: Bool = false
     var hasActiveCall: Bool = false
+    /// User ids currently in the room's call (MatrixRTC members), for Discord-
+    /// style participant avatars in the list. Live-only; not persisted.
+    var callParticipantIds: [String] = []
     /// The other party in a DM (first room hero), for presence.
     var dmUserId: String?
     /// Pending invite awaiting accept/decline.

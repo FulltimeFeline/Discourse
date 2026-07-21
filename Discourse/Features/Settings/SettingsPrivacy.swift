@@ -33,6 +33,14 @@ struct PrivacySettingsView: View {
             }
 
             Section {
+                Toggle("Warn in unencrypted rooms", isOn: $prefs.warnUnencrypted)
+            } header: {
+                Text("Encryption")
+            } footer: {
+                Text("Shows a notice above the composer when a room isn't end-to-end encrypted.")
+            }
+
+            Section {
                 Toggle("Remove location from photos", isOn: $prefs.stripLocationMetadata)
             } header: {
                 Text("Media")

@@ -34,6 +34,7 @@ final class Preferences {
         sendOnEnter = defaults.boolValue("pref.sendOnEnter", default: true)
         confirmBeforeDeleting = defaults.boolValue("pref.confirmBeforeDeleting", default: false)
         sendMessageHaptic = defaults.boolValue("pref.sendMessageHaptic", default: true)
+        warnUnencrypted = defaults.boolValue("pref.warnUnencrypted", default: true)
         // Privacy
         sendReadReceipts = defaults.boolValue("pref.sendReadReceipts", default: true)
         sendTypingNotifications = defaults.boolValue("pref.sendTypingNotifications", default: true)
@@ -107,6 +108,8 @@ final class Preferences {
     var sendOnEnter: Bool { didSet { defaults.set(sendOnEnter, forKey: "pref.sendOnEnter") } }
     var confirmBeforeDeleting: Bool { didSet { defaults.set(confirmBeforeDeleting, forKey: "pref.confirmBeforeDeleting") } }
     var sendMessageHaptic: Bool { didSet { defaults.set(sendMessageHaptic, forKey: "pref.sendMessageHaptic") } }
+    /// Shows the "not encrypted" banner above the composer in unencrypted rooms.
+    var warnUnencrypted: Bool { didSet { defaults.set(warnUnencrypted, forKey: "pref.warnUnencrypted") } }
 
     // MARK: Privacy
     var sendReadReceipts: Bool { didSet { defaults.set(sendReadReceipts, forKey: "pref.sendReadReceipts") } }

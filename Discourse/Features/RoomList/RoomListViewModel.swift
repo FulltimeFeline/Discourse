@@ -15,6 +15,7 @@ final class RoomListViewModel {
         let id: String
         var name: String
         var avatarURL: String?
+        var topic: String?
     }
 
     struct SpaceChild: Hashable, Identifiable {
@@ -537,7 +538,16 @@ final class RoomListViewModel {
     }
 
     private static func spaceItem(from room: SpaceRoom) -> SpaceItem {
-        SpaceItem(id: room.roomId, name: room.displayName, avatarURL: room.avatarUrl)
+        SpaceItem(id: room.roomId, name: room.displayName, avatarURL: room.avatarUrl,
+                  topic: room.topic)
+    }
+
+    /// The space banner mxc (Commet's `page.codeberg.everypizza.room.banner`
+    /// state event), fetched lazily when a space is opened.
+    func spaceBannerURL(forSpace spaceId: String) async -> String? {
+        let content = await service.stateEventContent(
+            roomId: spaceId, type: "page.codeberg.everypizza.room.banner")
+        return content?["url"] as? String
     }
 
     func stop() {
@@ -548,6 +558,10 @@ final class RoomListViewModel {
         previewSubscribedRoomIds = []
         invitableRoomIds = []
         invitePermissionChecked = []
+        manageableSpaceIds = []
+        spaceManageChecked = []
+        moveableRoomIds = []
+        movePermissionChecked = []
         spaceRefreshTask?.cancel()
         spaceRefreshTask = nil
         startRetryTask?.cancel()
@@ -652,11 +666,12 @@ final class RoomListViewModel {
     /// subscription makes the SDK emit a `.set` that `refreshDetails` turns into the
     /// preview. Only newly-seen rooms are sent.
     private func subscribeForPreviews() {
-        guard let roomListService = service.roomListService else { return }
-        let unsubscribed = rooms.map(\.id).filter { !previewSubscribedRoomIds.contains($0) }
-        guard !unsubscribed.isEmpty else { return }
-        previewSubscribedRoomIds.formUnion(unsubscribed)
-        Task { try? await roomListService.subscribeToRooms(roomIds: unsubscribed) }
+        // Previews now come from the room-list sync's own timeline limit
+        // (`withRoomListTimelineLimit`), so we no longer blanket-subscribe every
+        // room. Subscribing hundreds of rooms produced a huge per-sync request
+        // and suppressed the live receipts/typing extensions (which only stream
+        // for subscribed rooms). Only the open room is subscribed now (by the
+        // timeline), which keeps those ephemeral updates flowing.
     }
 
     /// Rooms and spaces the current user may invite to. Filled lazily by the
@@ -671,6 +686,40 @@ final class RoomListViewModel {
         let room = ffiRoom(withId: roomId) ?? (try? service.client.getRoom(roomId: roomId)) ?? nil
         guard let room, let levels = try? await room.getPowerLevels() else { return }
         if levels.canOwnUserInvite() { invitableRoomIds.insert(roomId) }
+    }
+
+    /// Spaces whose child list this user may edit (send `m.space.child`) — i.e.
+    /// spaces a room can actually be moved in/out of. Filled lazily like
+    /// `invitableRoomIds`; a space stays absent until confirmed (fail closed), so
+    /// the Spaces menu only offers spaces the move would actually succeed in.
+    private(set) var manageableSpaceIds: Set<String> = []
+    @ObservationIgnored private var spaceManageChecked: Set<String> = []
+
+    func refreshSpaceManagePermission(spaceId: String) async {
+        guard !spaceManageChecked.contains(spaceId) else { return }
+        spaceManageChecked.insert(spaceId)
+        let room = ffiRoom(withId: spaceId) ?? (try? service.client.getRoom(roomId: spaceId)) ?? nil
+        guard let room, let levels = try? await room.getPowerLevels() else { return }
+        if levels.canOwnUserSendState(stateEvent: .spaceChild) {
+            manageableSpaceIds.insert(spaceId)
+        }
+    }
+
+    /// Rooms this user may move into/out of a space at all — filing a room sets
+    /// `m.space.parent` in the room, so it needs power in the *room*, not just
+    /// the space. Without it the Spaces menu is hidden (fail closed) rather than
+    /// offering a move that would fail on a room you don't administer.
+    private(set) var moveableRoomIds: Set<String> = []
+    @ObservationIgnored private var movePermissionChecked: Set<String> = []
+
+    func refreshMovePermission(forRoomId roomId: String) async {
+        guard !movePermissionChecked.contains(roomId) else { return }
+        movePermissionChecked.insert(roomId)
+        let room = ffiRoom(withId: roomId) ?? (try? service.client.getRoom(roomId: roomId)) ?? nil
+        guard let room, let levels = try? await room.getPowerLevels() else { return }
+        if levels.canOwnUserSendState(stateEvent: .spaceParent) {
+            moveableRoomIds.insert(roomId)
+        }
     }
 
     private func add(_ room: Room, at index: Int) {
@@ -759,6 +808,9 @@ final class RoomListViewModel {
         updateDockBadge()
         recomputeUnreadFlags()
         scheduleSnapshotWrite()
+        #if os(iOS)
+        persistSpaceNamesForPush()
+        #endif
         for summary in changed {
             NotificationManager.shared.maybeNotify(room: summary,
                                                    spaceName: spaceName(ofRoom: summary.id),
@@ -774,6 +826,21 @@ final class RoomListViewModel {
         else { return nil }
         return spaces.first { $0.id == spaceId }?.name
     }
+
+    #if os(iOS)
+    /// Mirror the room→space names to the App Group so the notification service
+    /// extension can title pushes "Space › Room" (it can't resolve the space
+    /// hierarchy cheaply itself). No-op unless remote push is on.
+    private func persistSpaceNamesForPush() {
+        guard PushConfig.enabled else { return }
+        var map: [String: String] = [:]
+        for (spaceId, childIds) in spaceChildIds {
+            guard let name = spaces.first(where: { $0.id == spaceId })?.name else { continue }
+            for roomId in childIds where map[roomId] == nil { map[roomId] = name }
+        }
+        SpaceNameStore.save(map)
+    }
+    #endif
 
     /// Zeroes the local unread state so pips, badges, and banners react immediately
     /// instead of after the server round-trip.

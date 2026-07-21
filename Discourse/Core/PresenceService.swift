@@ -29,6 +29,9 @@ final class PresenceService {
         var state: State
         var lastActiveAgo: TimeInterval?
         var fetchedAt: Date
+        /// The `status_msg` — Commet and friends store the user's custom status
+        /// here (not in a profile field).
+        var statusMessage: String?
     }
 
     /// One user's observable presence, boxed so an update re-renders only that
@@ -74,6 +77,12 @@ final class PresenceService {
 
     func state(of userId: String) -> State? {
         user(userId).entry?.state
+    }
+
+    /// The user's custom status message (Matrix presence `status_msg`), which is
+    /// where Commet-family clients keep their status. nil when unset/unfetched.
+    func statusMessage(of userId: String) -> String? {
+        user(userId).entry?.statusMessage
     }
 
     /// "Online", "Idle", or how long ago they were last seen.
@@ -173,7 +182,11 @@ final class PresenceService {
                   let presence = (json["presence"] as? String).flatMap(State.init(rawValue:))
             else { return }
             let ago = (json["last_active_ago"] as? Double).map { $0 / 1000 }
-            box.entry = Entry(state: presence, lastActiveAgo: ago, fetchedAt: Date())
+            let statusMsg = (json["status_msg"] as? String).flatMap {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+            }
+            box.entry = Entry(state: presence, lastActiveAgo: ago, fetchedAt: Date(),
+                              statusMessage: statusMsg)
         }
     }
 }

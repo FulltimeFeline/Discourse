@@ -178,17 +178,11 @@ struct SearchResultsSheet: View {
 
     private var resultsContent: some View {
         VStack(spacing: 10) {
-            Picker("", selection: $category) {
-                ForEach(MessageSearch.Category.allCases) { item in
-                    Text(item.title).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            #if os(iOS)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            #endif
+            CategorySegmentedControl(selection: $category)
+                #if os(iOS)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                #endif
 
             if isLoading && hits.isEmpty {
                 ProgressView("Searching…")
@@ -351,25 +345,41 @@ struct RoomSearchSheet: View {
         #endif
     }
 
-    @ViewBuilder
-    private var searchContent: some View {
-        TextField("Search messages and media…", text: $query)
-            .textFieldStyle(.roundedBorder)
-            .focused($isSearchFieldFocused)
-            // ⌘F means "type now" — autofocus.
-            .onAppear { isSearchFieldFocused = true }
-            .onSubmit { scanOlder() }
-            #if os(iOS)
-            .submitLabel(.search)
-            #endif
-
-        Picker("", selection: $category) {
-            ForEach(MessageSearch.Category.allCases) { item in
-                Text(item.title).tag(item)
+    /// Liquid-glass search bubble: a capsule with an inline magnifier and clear
+    /// button, replacing the boxed rounded-border field.
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search messages and media…", text: $query)
+                .textFieldStyle(.plain)
+                .focused($isSearchFieldFocused)
+                // ⌘F means "type now" — autofocus.
+                .onAppear { isSearchFieldFocused = true }
+                .onSubmit { scanOlder() }
+                #if os(iOS)
+                .submitLabel(.search)
+                #endif
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .modifier(GlassSearchCapsule())
+    }
+
+    @ViewBuilder
+    private var searchContent: some View {
+        searchField
+
+        CategorySegmentedControl(selection: $category)
+            .padding(.top, 2)
 
         if matches.isEmpty {
             if trimmedQuery.isEmpty && category == .all {
@@ -491,5 +501,55 @@ struct RoomSearchSheet: View {
         case .location(let body, _): body.isEmpty ? String(localized: "Shared location") : body
         default: String(localized: "Message")
         }
+    }
+}
+
+/// Wraps content in the OS "liquid glass" capsule on macOS 26 / iOS 26, falling
+/// back to a material-filled capsule with a hairline border on older systems.
+private struct GlassSearchCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, iOS 26.0, *) {
+            content.glassEffect(in: Capsule())
+        } else {
+            content
+                .background(.regularMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.quaternary, lineWidth: 1))
+        }
+    }
+}
+
+/// iOS 26-style segmented control for the search category: a glass capsule with
+/// a tinted pill that slides to the selected segment, in place of the boxed,
+/// divider-separated `.segmented` picker.
+private struct CategorySegmentedControl: View {
+    @Binding var selection: MessageSearch.Category
+    @Namespace private var pill
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(MessageSearch.Category.allCases) { item in
+                let selected = item == selection
+                Text(item.title)
+                    .font(.callout.weight(selected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background {
+                        if selected {
+                            Capsule().fill(.tint)
+                                .matchedGeometryEffect(id: "pill", in: pill)
+                        }
+                    }
+                    .contentShape(Capsule())
+                    .onTapGesture {
+                        withAnimation(.snappy(duration: 0.28)) { selection = item }
+                    }
+                    .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(3)
+        .glassEffect(in: Capsule())
     }
 }

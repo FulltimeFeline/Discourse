@@ -144,6 +144,9 @@ final class RoomSettingsModel {
     var name = ""
     var topic = ""
     var avatarURL: String?
+    /// Space banner (custom state event); nil for rooms and unset spaces.
+    var bannerURL: String?
+    var canEditBanner = false        // page.codeberg.everypizza.room.banner
     var canonicalAlias: String?
     var newAlias = ""
     var isInDirectory = false
@@ -243,6 +246,12 @@ final class RoomSettingsModel {
                 && levels.canOwnUserSendState(stateEvent: .roomHistoryVisibility)
             canEditAddresses = levels.canOwnUserSendState(stateEvent: .roomCanonicalAlias)
             canEditRoles = levels.canOwnUserSendState(stateEvent: .roomPowerLevels)
+            canEditBanner = target.isSpace && levels.canOwnUserSendState(
+                stateEvent: .custom(value: SessionScope.spaceBannerEventType))
+        }
+
+        if target.isSpace {
+            bannerURL = await scope.roomList.spaceBannerURL(forSpace: target.roomId)
         }
 
         if let content = await scope.service.stateEventContent(
@@ -309,6 +318,29 @@ final class RoomSettingsModel {
     func removeAvatar() {
         guard let room else { return }
         run { try await room.removeAvatar() }
+    }
+
+    func setBanner(data: Data) {
+        guard target.isSpace else { return }
+        run { [scope, target] in
+            let type = CGImageSourceCreateWithData(data as CFData, nil)
+                .flatMap { CGImageSourceGetType($0) as String? }
+                .flatMap { UTType($0) }
+            let mime = type?.preferredMIMEType ?? "image/png"
+            guard try await scope.setSpaceBanner(spaceId: target.roomId,
+                                                 data: data, mimeType: mime) != nil else {
+                throw SettingsError.noPermission
+            }
+        }
+    }
+
+    func removeBanner() {
+        guard target.isSpace else { return }
+        run { [scope, target] in
+            guard await scope.removeSpaceBanner(spaceId: target.roomId) else {
+                throw SettingsError.noPermission
+            }
+        }
     }
 
     func setMainAddress() {
@@ -425,10 +457,21 @@ final class RoomSettingsModel {
 
 // MARK: - Tabs
 
+private enum SettingsError: LocalizedError {
+    case noPermission
+    var errorDescription: String? {
+        String(localized: "You don't have permission to change this banner.")
+    }
+}
+
 private struct GeneralSettingsTab: View {
     @Bindable var model: RoomSettingsModel
     let dismiss: () -> Void
-    @State private var showsAvatarPicker = false
+    /// One image picker for both avatar and banner, routed by target — two
+    /// `.fileImporter`s in one subtree fault in SwiftUI.
+    private enum ImageTarget { case avatar, banner }
+    @State private var imageTarget: ImageTarget = .avatar
+    @State private var showsImagePicker = false
     @State private var confirmingLeave = false
 
     private var isSpace: Bool { model.target.isSpace }
@@ -463,7 +506,7 @@ private struct GeneralSettingsTab: View {
                                avatarURL: model.avatarURL)
                 if model.canEditBasics {
                     HStack(spacing: 6) {
-                        Button("Change…") { showsAvatarPicker = true }
+                        Button("Change…") { imageTarget = .avatar; showsImagePicker = true }
                             .controlSize(.small)
                         if model.avatarURL != nil {
                             Button("Remove") { model.removeAvatar() }
@@ -472,13 +515,44 @@ private struct GeneralSettingsTab: View {
                     }
                 }
             }
-            .fileImporter(isPresented: $showsAvatarPicker, allowedContentTypes: [.image]) { result in
-                guard case .success(let url) = result else { return }
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                if let data = try? Data(contentsOf: url) {
-                    model.setAvatar(data: data)
+        }
+        .fileImporter(isPresented: $showsImagePicker, allowedContentTypes: [.image]) { result in
+            guard case .success(let url) = result else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { return }
+            switch imageTarget {
+            case .avatar: model.setAvatar(data: data)
+            case .banner: model.setBanner(data: data)
+            }
+        }
+
+        if isSpace {
+            Divider()
+
+            Text("Banner").font(.headline)
+            if let banner = model.bannerURL {
+                BannerImageView(mxcUrl: banner)
+                    .frame(height: 96)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            if model.canEditBanner {
+                HStack(spacing: 6) {
+                    Button(model.bannerURL == nil ? "Add Banner…" : "Change Banner…") {
+                        imageTarget = .banner; showsImagePicker = true
+                    }
+                    .controlSize(.small)
+                    if model.bannerURL != nil {
+                        Button("Remove", role: .destructive) { model.removeBanner() }
+                            .controlSize(.small)
+                    }
                 }
+                Text("Shown at the top of your space's home page.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Only space admins can change the banner.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
 

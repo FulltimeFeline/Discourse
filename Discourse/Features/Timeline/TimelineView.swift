@@ -30,6 +30,7 @@ struct TimelineView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.closeChat) private var closeChat
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.pronounsStore) private var pronounsStore
     /// Persisted so the details column survives room switches and relaunches.
     @AppStorage("showsDetailsColumn") private var showsDetails = false
     @State private var threadTarget: ThreadTarget?
@@ -141,16 +142,28 @@ struct TimelineView: View {
                                            size: 30,
                                            avatarURL: viewModel.avatarURL)
                                 .presenceIndicator(userId: viewModel.dmPeerId, size: 10)
-                            Text(viewModel.roomName)
-                                .font(.headline)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            if viewModel.isEncrypted {
-                                Image(systemName: "lock.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize()
-                                    .accessibilityLabel("End-to-end encrypted")
+                            VStack(alignment: .leading, spacing: 0) {
+                                HStack(spacing: 5) {
+                                    Text(viewModel.roomName)
+                                        .font(.headline)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                    if viewModel.isEncrypted {
+                                        Image(systemName: "lock.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize()
+                                            .accessibilityLabel("End-to-end encrypted")
+                                    }
+                                }
+                                if let peer = viewModel.dmPeerId,
+                                   let status = pronounsStore?.status(for: peer), !status.isEmpty {
+                                    Text(status)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
                             }
                             Spacer(minLength: 0)
                         }
@@ -308,10 +321,14 @@ struct TimelineView: View {
     /// subtitles spill across the trailing toolbar items before eliding. Width
     /// bucketed and memoized so resize re-measures at most once per 8pt step.
     private var subtitle: String {
+        // DMs: show the peer's Commet status under their name (they rarely have a
+        // topic). Rooms: the topic.
+        if viewModel.isDirect, let peer = viewModel.dmPeerId,
+           let status = pronounsStore?.status(for: peer), !status.isEmpty {
+            return Self.truncatedSubtitle(status, toFit: subtitleWidth)
+        }
         guard let topic = viewModel.topic else { return "" }
-        // Leading title-bar inset + lock badge + call/search/details cluster.
-        let reserved: CGFloat = viewModel.isEncrypted ? 290 : 240
-        let available = max(60, ((detailWidth - reserved) / 8).rounded(.down) * 8)
+        let available = subtitleWidth
         let key = "\(Int(available))|\(topic)"
         if let hit = SubtitleCache.entries[key] { return hit }
         let value = Self.truncatedSubtitle(topic, toFit: available)
@@ -320,6 +337,14 @@ struct TimelineView: View {
         }
         SubtitleCache.entries[key] = value
         return value
+    }
+
+    /// Title-bar width available to the subtitle: total minus the leading inset,
+    /// lock badge, and the call/search/details cluster. Bucketed to 8pt so a
+    /// resize re-measures at most once per step.
+    private var subtitleWidth: CGFloat {
+        let reserved: CGFloat = viewModel.isEncrypted ? 290 : 240
+        return max(60, ((detailWidth - reserved) / 8).rounded(.down) * 8)
     }
 
     private static func truncatedSubtitle(_ topic: String, toFit available: CGFloat) -> String {
@@ -465,11 +490,13 @@ struct TimelineView: View {
             }
             .onChange(of: viewModel.entries.last?.id) { _, newLast in
                 guard let newLast else { return }
-                // Follow the tail while at the bottom, and always for a message
-                // we just sent (local echo has no event ID yet).
+                // Follow the tail while at the bottom, and always for our own
+                // message — including when the local echo (no event ID) is
+                // replaced by the confirmed event, which would otherwise stop
+                // the follow and leave us just above the bottom.
                 let sentOwn: Bool = {
                     if case .message(let m) = viewModel.entries.last {
-                        return m.isOwn && m.eventId == nil
+                        return m.isOwn
                     }
                     return false
                 }()
@@ -481,11 +508,34 @@ struct TimelineView: View {
                     proxy.scrollTo(newLast, anchor: .bottom)
                 }
             }
+            // The typing tag grows the composer (a bottom safe-area inset); when
+            // at the bottom, re-anchor so the newest message isn't left hidden
+            // behind it.
+            .onChange(of: viewModel.typingUsers.isEmpty) { _, _ in
+                guard viewModel.isAtBottom, let last = viewModel.entries.last?.id else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(last, anchor: .bottom)
+                    }
+                }
+            }
             // Land on the first unread on open, no travel animation.
             .onChange(of: openUnreadScrollId) { _, id in
                 guard let id else { return }
                 openUnreadScrollId = nil
                 proxy.scrollTo(id, anchor: .top)
+            }
+            // Unpark restore (iOS keeps the view mounted, so `.task` doesn't
+            // re-run): land back on the pre-switch position after the reset.
+            .onChange(of: viewModel.unparkScrollTarget) { _, eventId in
+                guard let eventId else { return }
+                viewModel.clearUnparkScrollTarget()
+                if let target = viewModel.entries.first(where: {
+                    if case .message(let m) = $0 { return m.eventId == eventId }
+                    return false
+                }) {
+                    proxy.scrollTo(target.id, anchor: .bottom)
+                }
             }
             // Scroll-memory restore: land there instantly.
             .onChange(of: restoreEventId) { _, eventId in
@@ -688,7 +738,9 @@ private struct JumpToUnreadOverlay: View {
 
     var body: some View {
         ZStack {
-            if let markerId = viewModel.firstUnreadMarkerId,
+            if viewModel.unreadMarkerVisible,
+               let markerId = viewModel.firstUnreadMarkerId,
+               !viewModel.isAtBottom,
                !viewModel.visibleEntryIds.contains(markerId) {
                 Button(action: action) {
                     Label("Jump to unread", systemImage: "arrow.up")
@@ -707,7 +759,7 @@ private struct JumpToUnreadOverlay: View {
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85),
-                   value: viewModel.firstUnreadMarkerId)
+                   value: viewModel.unreadMarkerVisible)
     }
 }
 
@@ -768,7 +820,11 @@ struct TimelineEntryRow: View {
         case .dayDivider(_, let date):
             DayDividerView(date: date)
         case .readMarker:
-            ReadMarkerView()
+            // The inline "NEW" divider auto-clears once seen (and stays gone on
+            // return), tracked by the same dismissal state as the jump pill.
+            if viewModel.unreadMarkerVisible {
+                ReadMarkerView()
+            }
         case .timelineStart:
             TimelineStartView()
         case .hidden:
@@ -1101,6 +1157,7 @@ struct RoleTagLabel: View {
 struct MemberListView: View {
     let viewModel: TimelineViewModel
     @Environment(AppState.self) private var appState
+    @Environment(\.presenceService) private var presence
     @State private var query = ""
     @State private var profileTarget: ProfileTarget?
     @State private var showsInvite = false
@@ -1137,8 +1194,17 @@ struct MemberListView: View {
         Self.filteredMembers(viewModel.members, matching: query)
     }
 
+    /// Members whose presence is confirmed offline; grouped into their own
+    /// bottom section so active members stay up top.
+    private var offlineMembers: [TimelineViewModel.MemberItem] {
+        filtered.filter { presence?.state(of: $0.id) == .offline }
+    }
+
+    /// Role groups of everyone not confirmed offline (online, idle, or not yet
+    /// fetched — the latter stay up top until proven offline).
     private var groups: [(level: Int, members: [TimelineViewModel.MemberItem])] {
-        Self.memberGroups(of: filtered)
+        let offline = Set(offlineMembers.map(\.id))
+        return Self.memberGroups(of: filtered.filter { !offline.contains($0.id) })
     }
 
     var body: some View {
@@ -1157,6 +1223,21 @@ struct MemberListView: View {
                 .padding(.top, 6)
                 ForEach(group.members) { member in
                     memberRow(member)
+                }
+            }
+            if !offlineMembers.isEmpty {
+                HStack(spacing: 4) {
+                    Text("Offline")
+                    Text("— \(offlineMembers.count)")
+                        .foregroundStyle(.tertiary)
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .listRowSeparator(.hidden)
+                .padding(.top, 6)
+                ForEach(offlineMembers) { member in
+                    memberRow(member)
+                        .opacity(0.6)
                 }
             }
         }
@@ -1255,19 +1336,38 @@ private struct MemberRowLabel: View {
     var avatarSize: CGFloat = 26
     var presenceSize: CGFloat = 8
     var spacing: CGFloat = 8
+    @Environment(\.pronounsStore) private var pronounsStore
 
     var body: some View {
         HStack(spacing: spacing) {
             RoomAvatarView(name: member.name, isDirect: true, size: avatarSize,
                            avatarURL: member.avatarURL)
                 .presenceIndicator(userId: member.id, size: presenceSize)
-            Text(member.name)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            if member.id == ownUserId {
-                Text("you")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 5) {
+                    Text(member.name)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let pronouns = pronounsStore?.pronouns(for: member.id) {
+                        Text(pronouns)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    if member.id == ownUserId {
+                        Text("you")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                // Commet custom status, Discord-style, under the name.
+                if let status = pronounsStore?.status(for: member.id), !status.isEmpty {
+                    Text(status)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -1366,6 +1466,7 @@ private struct RoomDetailsSheet: View {
     let viewModel: TimelineViewModel
     var jumpToEvent: (String) -> Void = { _ in }
     @Environment(AppState.self) private var appState
+    @Environment(\.presenceService) private var presence
     @State private var query = ""
     @State private var profileTarget: ProfileTarget?
     @State private var showsInvite = false
@@ -1373,9 +1474,17 @@ private struct RoomDetailsSheet: View {
     @State private var moderation: MemberListView.ModerationAction?
     @State private var moderationError: String?
 
+    private var filtered: [TimelineViewModel.MemberItem] {
+        MemberListView.filteredMembers(viewModel.members, matching: query)
+    }
+
+    private var offlineMembers: [TimelineViewModel.MemberItem] {
+        filtered.filter { presence?.state(of: $0.id) == .offline }
+    }
+
     private var groups: [(level: Int, members: [TimelineViewModel.MemberItem])] {
-        MemberListView.memberGroups(
-            of: MemberListView.filteredMembers(viewModel.members, matching: query))
+        let offline = Set(offlineMembers.map(\.id))
+        return MemberListView.memberGroups(of: filtered.filter { !offline.contains($0.id) })
     }
 
     var body: some View {
@@ -1504,7 +1613,7 @@ private struct RoomDetailsSheet: View {
                 }
                 .listRowBackground(Color.clear)
             }
-        } else if groups.isEmpty {
+        } else if groups.isEmpty && offlineMembers.isEmpty {
             Section {
                 ContentUnavailableView.search(text: query)
                     .listRowBackground(Color.clear)
@@ -1520,6 +1629,19 @@ private struct RoomDetailsSheet: View {
                         RoleTagLabel(tag: viewModel.roleTag(forLevel: group.level),
                                      loader: viewModel.mediaLoader)
                         Text("\(group.members.count)")
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            if !offlineMembers.isEmpty {
+                Section {
+                    ForEach(offlineMembers) { member in
+                        memberRow(member).opacity(0.6)
+                    }
+                } header: {
+                    HStack {
+                        Text("Offline")
+                        Text("\(offlineMembers.count)")
                             .foregroundStyle(.tertiary)
                     }
                 }

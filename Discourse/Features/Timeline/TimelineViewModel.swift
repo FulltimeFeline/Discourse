@@ -38,6 +38,13 @@ final class TimelineViewModel {
     /// SDK read-marker entry ("NEW" divider), if in the loaded window. Cached
     /// per diff batch so jump-to-unread doesn't rescan `entries` per frame.
     private(set) var firstUnreadMarkerId: String?
+    /// Whether the "jump to unread" pill should show. A marker auto-dismisses a
+    /// few seconds after it appears (you've seen it), stays dismissed across a
+    /// park/unpark room switch (this VM is cached), and re-arms only for a
+    /// genuinely different marker.
+    private(set) var unreadMarkerVisible = false
+    @ObservationIgnored private var dismissedMarkerId: String?
+    @ObservationIgnored private var unreadDismissTask: Task<Void, Never>?
     /// Per-room composer draft, retained here so switching rooms (which tears
     /// down the composer) doesn't lose half-typed text.
     @ObservationIgnored var draftText = ""
@@ -102,15 +109,26 @@ final class TimelineViewModel {
     /// Set when parking detached the diff listener; the unpark re-attach clears it.
     @ObservationIgnored private var parkedListenerDetached = false
 
+    /// Bottom-most visible event captured on park, so after unpark's full
+    /// `.reset` re-delivers the timeline the view can land back where it was
+    /// instead of drifting up.
+    @ObservationIgnored private var pendingUnparkAnchor: String?
+    /// The view scrolls here (then clears it) once unpark rebuilds the entries.
+    private(set) var unparkScrollTarget: String?
+    func clearUnparkScrollTarget() { unparkScrollTarget = nil }
+
     /// Sheds a parked room's memory: entry models beyond the viewport anchor,
     /// and the member list (reloaded on unpark). The listener is detached
     /// first — positional diffs can't apply to a truncated array; the unpark
     /// re-attach delivers a fresh reset with the full item list instead.
     private func parkTimeline() {
         guard mode == .live, timeline != nil else { return }
+        pendingUnparkAnchor = scrollAnchorEventId
         audioPlayback.stopAll()
         streamTask?.cancel()
         streamTask = nil
+        ephemeralSyncTask?.cancel()
+        ephemeralSyncTask = nil
         timelineListenerRetained = []
         parkedListenerDetached = true
         // Keep the scroll anchor's row plus a tail of recent context.
@@ -554,6 +572,7 @@ final class TimelineViewModel {
                 self.apply(diffs)
             }
         }
+        startEphemeralSync()
     }
 
     private func flushOutboundQueue() async {
@@ -580,6 +599,8 @@ final class TimelineViewModel {
         typingStopTask = nil
         typingExpiryTask?.cancel()
         typingExpiryTask = nil
+        ephemeralSyncTask?.cancel()
+        ephemeralSyncTask = nil
         retained = []
         timelineListenerRetained = []
         parkedListenerDetached = false
@@ -1230,7 +1251,122 @@ final class TimelineViewModel {
         }
     }
 
+    /// Event ids whose reply details we've already asked the SDK to load, so a
+    /// message that stays pending isn't re-fetched on every diff.
+    @ObservationIgnored private var fetchedReplyDetails: Set<String> = []
+
+    /// Loads the replied-to event for any message whose reply preview is still
+    /// unresolved. On completion the SDK emits a timeline update with the
+    /// details ready, so the snippet fills in instead of showing just "…".
+    private func fetchPendingReplyDetails() {
+        guard let timeline else { return }
+        for entry in entries {
+            guard case .message(let message) = entry,
+                  let eventId = message.eventId,
+                  message.replyPreview?.isPending == true,
+                  !fetchedReplyDetails.contains(eventId) else { continue }
+            fetchedReplyDetails.insert(eventId)
+            Task { try? await timeline.fetchDetailsForEvent(eventId: eventId) }
+        }
+    }
+
+    /// True `userId -> eventId` read positions, polled from the sliding-sync
+    /// receipts extension (the SDK's timeline mis-places receipts on the newest
+    /// event). Empty until the first poll lands.
+    @ObservationIgnored private var explicitReceipts: [String: String] = [:]
+    @ObservationIgnored private var ephemeralSyncTask: Task<Void, Never>?
+
+    /// Overrides each message's receipt list with the true positions, so a
+    /// reader shows on the exact event they read — including the newest one,
+    /// which the SDK otherwise leaves a message behind. No-op until polled.
+    private func applyExplicitReceipts() {
+        guard !explicitReceipts.isEmpty else { return }
+        for i in entries.indices {
+            guard case .message(var m) = entries[i], let eventId = m.eventId else { continue }
+            let readers = explicitReceipts
+                .filter { $0.value == eventId && $0.key != ownUserId }
+                .keys.sorted()
+            if m.readReceiptUserIds != Array(readers) {
+                m.readReceiptUserIds = Array(readers)
+                entries[i] = .message(m)
+            }
+        }
+    }
+
+    /// Streams the open room's ephemerals (receipts + typing) via a parallel
+    /// long-poll `/sync`, because the SDK's sliding-sync path mis-places
+    /// receipts on the newest event and its ephemeral updates don't surface
+    /// live. Initial call snapshots the full state; each subsequent long-poll
+    /// blocks until something changes, so updates are effectively instant.
+    private func startEphemeralSync() {
+        ephemeralSyncTask?.cancel()
+        guard mode == .live else { return }
+        ephemeralSyncTask = Task { [weak self] in
+            var since: String?
+            while !Task.isCancelled {
+                guard let self, !self.isParked, let service = self.service else { break }
+                guard let result = await service.fetchRoomEphemerals(roomId: self.roomId, since: since) else {
+                    try? await Task.sleep(for: .seconds(3))
+                    continue
+                }
+                since = result.nextBatch
+                var receiptsChanged = false
+                for (userId, eventId) in result.receipts where self.explicitReceipts[userId] != eventId {
+                    self.explicitReceipts[userId] = eventId
+                    receiptsChanged = true
+                }
+                if receiptsChanged { self.applyExplicitReceipts() }
+
+                if let typing = result.typing {
+                    let others = typing.filter { $0 != self.ownUserId }
+                    if self.typingUsers != others { self.typingUsers = others }
+                    self.typingExpiryTask?.cancel()
+                    if !others.isEmpty {
+                        self.typingExpiryTask = Task { [weak self] in
+                            try? await Task.sleep(for: .seconds(12))
+                            self?.typingUsers = []
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Updates the read-marker and (re)arms the auto-dismissing pill. Only a
+    /// marker we haven't already dismissed shows, and only for a few seconds.
+    private func setUnreadMarker(_ marker: String?) {
+        guard marker != firstUnreadMarkerId else { return }
+        firstUnreadMarkerId = marker
+        guard let marker else {
+            unreadDismissTask?.cancel()
+            unreadMarkerVisible = false
+            return
+        }
+        // Already seen this one (e.g. returning to the room): stay hidden.
+        guard marker != dismissedMarkerId else {
+            unreadMarkerVisible = false
+            return
+        }
+        unreadMarkerVisible = true
+        unreadDismissTask?.cancel()
+        unreadDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self else { return }
+            self.dismissedMarkerId = marker
+            self.unreadMarkerVisible = false
+        }
+    }
+
+    /// Hides the pill immediately (you've caught up), and remembers it as seen
+    /// so it won't reappear when you return to the room.
+    private func dismissUnreadMarker() {
+        unreadDismissTask?.cancel()
+        dismissedMarkerId = firstUnreadMarkerId
+        unreadMarkerVisible = false
+    }
+
     func markAsRead() {
+        dismissUnreadMarker()
         guard !isParked, mode == .live, let timeline else { return }
         // The bottom sentinel calls this on every scroll flip; re-send only
         // for a newer event than last acknowledged, with a short cool-down
@@ -1357,6 +1493,16 @@ final class TimelineViewModel {
                 if entries.count < hadMore {
                     reachedStart = false
                 }
+                // Unpark: land back on the pre-park scroll anchor if it's here.
+                if let anchor = pendingUnparkAnchor {
+                    pendingUnparkAnchor = nil
+                    if entries.contains(where: {
+                        if case .message(let m) = $0 { return m.eventId == anchor }
+                        return false
+                    }) {
+                        unparkScrollTarget = anchor
+                    }
+                }
                 shields.removeAll()
                 shieldsRequested.removeAll()
                 needsFullRegroup = true
@@ -1378,7 +1524,9 @@ final class TimelineViewModel {
             if case .readMarker = $0 { return true }
             return false
         })?.id
-        if marker != firstUnreadMarkerId { firstUnreadMarkerId = marker }
+        setUnreadMarker(marker)
+        applyExplicitReceipts()
+        fetchPendingReplyDetails()
         if appendedAtBottom && isAtBottom {
             markAsRead()
         }

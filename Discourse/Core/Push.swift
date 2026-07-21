@@ -1,6 +1,7 @@
 #if os(iOS)
 import UIKit
 import UserNotifications
+import os
 
 /// Bridges APNs registration to the active session's Matrix pusher. The device
 /// token and the active service arrive independently, so registration fires
@@ -9,20 +10,23 @@ import UserNotifications
 final class PushRegistry {
     static let shared = PushRegistry()
 
-    private var deviceTokenHex: String?
+    private var pushkey: String?
     private weak var service: MatrixService?
+
+    private let log = Logger(subsystem: "dev.discourse.push", category: "registry")
 
     private var gatewayConfigured: Bool { !PushConfig.pushGatewayURL.contains("example.com") }
 
     func requestAuthorizationAndRegister() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [log] granted, error in
+            log.info("authorization granted=\(granted, privacy: .public) error=\(error?.localizedDescription ?? "nil", privacy: .public)")
             guard granted else { return }
             Task { @MainActor in UIApplication.shared.registerForRemoteNotifications() }
         }
     }
 
-    func setDeviceToken(_ hex: String) {
-        deviceTokenHex = hex
+    func setDeviceToken(_ pushkey: String) {
+        self.pushkey = pushkey
         register()
     }
 
@@ -32,8 +36,11 @@ final class PushRegistry {
     }
 
     private func register() {
-        guard gatewayConfigured, let deviceTokenHex, let service else { return }
-        Task { await service.registerPusher(deviceTokenHex: deviceTokenHex) }
+        guard gatewayConfigured else { log.error("gateway not configured: \(PushConfig.pushGatewayURL, privacy: .public)"); return }
+        guard let pushkey else { log.info("waiting for APNs device token"); return }
+        guard let service else { log.info("waiting for active session"); return }
+        log.info("registering pusher (token+service+gateway ready)")
+        Task { await service.registerPusher(pushkey: pushkey) }
     }
 }
 
@@ -47,8 +54,12 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
-        Task { @MainActor in PushRegistry.shared.setDeviceToken(hex) }
+        // Base64, NOT hex: sygnal's default `convert_device_token_to_hex: true`
+        // base64-decodes the pushkey. Sending hex makes it decode garbage, and
+        // APNs rejects every push with BadDeviceToken. This matches the Element/
+        // Matrix iOS convention.
+        let pushkey = deviceToken.base64EncodedString()
+        Task { @MainActor in PushRegistry.shared.setDeviceToken(pushkey) }
     }
 
     func application(_ application: UIApplication,

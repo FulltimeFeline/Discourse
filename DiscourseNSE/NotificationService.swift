@@ -1,5 +1,8 @@
 import UserNotifications
+import os
 @preconcurrency import MatrixRustSDK
+
+private let nseLog = Logger(subsystem: "dev.discourse.push", category: "nse")
 
 /// Wakes on each remote push, restores a client from the shared App Group
 /// store, and rewrites the notification with the decrypted sender, room, and
@@ -14,11 +17,16 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         bestAttempt = request.content.mutableCopy() as? UNMutableNotificationContent
 
         let info = request.content.userInfo
+        nseLog.info("NSE woke — keys=\(info.keys.map { "\($0)" }.joined(separator: ","), privacy: .public)")
         guard let roomId = info["room_id"] as? String,
               let eventId = info["event_id"] as? String else {
+            nseLog.error("missing room_id/event_id in payload — delivering fallback")
             return deliver()
         }
         let userId = info["user_id"] as? String
+        // Group by room and let the app clear/suppress a room's banners when it's
+        // opened (NotificationManager keys off threadIdentifier / roomId).
+        bestAttempt?.threadIdentifier = roomId
 
         Task {
             await enrich(userId: userId, roomId: roomId, eventId: eventId)
@@ -27,6 +35,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 
     override func serviceExtensionTimeWillExpire() {
+        nseLog.error("time expired before decryption — delivering fallback")
         deliver()
     }
 
@@ -41,7 +50,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         let tokens = SessionStore().loadAll()
         guard let token = userId.flatMap({ id in tokens.first { $0.session.userId == id } })
-                ?? tokens.first else { return }
+                ?? tokens.first else {
+            nseLog.error("no stored session in shared keychain — App Group/keychain not shared?")
+            return
+        }
 
         do {
             let dirs = try SessionStore.currentSessionDirectories(token: token)
@@ -55,22 +67,26 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
             let notificationClient = try await client.notificationClient(processSetup: .multipleProcesses)
             guard case let .event(item) = try await notificationClient.getNotification(roomId: roomId, eventId: eventId) else {
+                nseLog.error("getNotification returned no event")
                 return
             }
-            apply(item)
+            apply(item, roomId: roomId)
+            nseLog.info("decrypted + enriched notification")
         } catch {
-            // Keep the gateway's default payload.
+            nseLog.error("enrich failed: \(error, privacy: .public)")
         }
     }
 
-    private func apply(_ item: NotificationItem) {
+    private func apply(_ item: NotificationItem, roomId: String) {
         guard let content = bestAttempt else { return }
         let sender = item.senderInfo.displayName ?? ""
         let room = item.roomInfo.displayName
         let isGroup = item.roomInfo.joinedMembersCount > 2
 
         if isGroup {
-            content.title = room
+            // "Space › Room" when the app has recorded this room's parent space.
+            let space = SpaceNameStore.spaceName(forRoom: roomId)
+            content.title = space.map { "\($0) › \(room)" } ?? room
             content.subtitle = sender.isEmpty ? "" : sender
         } else {
             content.title = sender.isEmpty ? room : sender
@@ -83,12 +99,22 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
     }
 
-    /// The decrypted event JSON carries the plaintext message body.
+    /// The decrypted event JSON carries the plaintext message body. Replies are
+    /// prefixed with "↩ " and their `> <@user> …` fallback stripped, so a
+    /// notification shows the clean reply text instead of the quoted original.
     private func messageBody(from rawEvent: String) -> String? {
         guard let data = rawEvent.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = json["content"] as? [String: Any],
-              let body = content["body"] as? String else { return nil }
+              var body = content["body"] as? String else { return nil }
+        let isReply = (content["m.relates_to"] as? [String: Any])?["m.in_reply_to"] != nil
+        if isReply, body.hasPrefix(">") {
+            var lines = body.components(separatedBy: "\n")
+            var i = 0
+            while i < lines.count, lines[i].hasPrefix(">") { i += 1 }
+            if i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).isEmpty { i += 1 }
+            if i < lines.count { body = "↩ " + lines[i...].joined(separator: "\n") }
+        }
         return body.replacingOccurrences(of: "\n", with: " ")
     }
 }

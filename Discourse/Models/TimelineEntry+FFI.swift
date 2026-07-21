@@ -79,6 +79,42 @@ struct ImageItem: Hashable {
     }
 }
 
+struct VideoItem: Hashable {
+    var filename: String
+    var caption: String?
+    var width: Double?
+    var height: Double?
+    var duration: TimeInterval?
+    /// The video file itself (played on tap).
+    var source: MediaSourceBox
+    /// Poster frame, when the sender provided one.
+    var thumbnailSource: MediaSourceBox?
+    var blurhash: String?
+    var mimeType: String?
+
+    var hasKnownSize: Bool {
+        if let width, let height, width >= 1, height >= 1 { return true }
+        return false
+    }
+
+    /// Inline footprint, matching images so a video reads like a playable image.
+    var displaySize: CGSize {
+        let maxWidth = 360.0, maxHeight = 280.0
+        guard let width, let height, width >= 1, height >= 1 else {
+            return CGSize(width: 240, height: 180)
+        }
+        let scale = min(maxWidth / width, maxHeight / height, 1)
+        return CGSize(width: max(40, width * scale), height: max(40, height * scale))
+    }
+
+    /// "1:05" style duration badge, when known.
+    var durationText: String? {
+        guard let duration, duration >= 1 else { return nil }
+        let total = Int(duration.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
 extension MessageItem {
     var ffiItemId: EventOrTransactionId? {
         if let eventId { return .eventId(eventId: eventId) }
@@ -233,19 +269,34 @@ extension TimelineEntry {
                 snippet: RoomSummary.previewText(from: content) ?? "…"
             )
         case .pending, .unavailable:
-            return MessageItem.ReplyPreview(eventId: eventId, senderName: "", snippet: "…")
+            return MessageItem.ReplyPreview(eventId: eventId, senderName: "", snippet: "…",
+                                            isPending: true)
         case .error:
             return MessageItem.ReplyPreview(eventId: eventId, senderName: "",
                                             snippet: String(localized: "Message unavailable"))
         }
     }
 
+    /// Strips the Matrix reply fallback — the leading `> <@user> …` quoted lines
+    /// and their trailing blank separator — from a reply's body. The reply
+    /// preview renders the quoted message instead, so keeping the fallback would
+    /// double it up as ugly `> …` text.
+    static func strippedReplyFallback(_ body: String, isReply: Bool) -> String {
+        guard isReply, body.hasPrefix(">") else { return body }
+        var lines = body.components(separatedBy: "\n")
+        var i = 0
+        while i < lines.count, lines[i].hasPrefix(">") { i += 1 }
+        if i < lines.count, lines[i].trimmingCharacters(in: .whitespaces).isEmpty { i += 1 }
+        guard i < lines.count else { return body }
+        return lines[i...].joined(separator: "\n")
+    }
+
     private static func kind(of msgLike: MsgLikeContent) -> MessageItem.Kind {
         switch msgLike.kind {
         case .message(let message):
             switch message.msgType {
-            case .text: .text(message.body)
-            case .notice: .notice(message.body)
+            case .text: .text(Self.strippedReplyFallback(message.body, isReply: msgLike.inReplyTo != nil))
+            case .notice: .notice(Self.strippedReplyFallback(message.body, isReply: msgLike.inReplyTo != nil))
             case .emote: .emote(message.body)
             case .image(let content): .image(ImageItem(
                 filename: content.filename,
@@ -257,7 +308,17 @@ extension TimelineEntry {
                 source: MediaSourceBox(content.source),
                 blurhash: content.info?.blurhash
             ))
-            case .video(let content): .media(label: content.filename, systemImage: "video")
+            case .video(let content): .video(VideoItem(
+                filename: content.filename,
+                caption: content.caption,
+                width: content.info?.width.map { Double($0) },
+                height: content.info?.height.map { Double($0) },
+                duration: content.info?.duration,
+                source: MediaSourceBox(content.source),
+                thumbnailSource: content.info?.thumbnailSource.map(MediaSourceBox.init),
+                blurhash: content.info?.blurhash,
+                mimeType: content.info?.mimetype
+            ))
             case .audio(let content): .audio(AudioItem(
                 filename: content.filename,
                 duration: content.info?.duration ?? content.audio?.duration,

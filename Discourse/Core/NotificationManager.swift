@@ -89,6 +89,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func maybeNotify(room: RoomSummary, spaceName: String? = nil, accountUserId: String) {
+        #if os(iOS)
+        // With remote push on, the notification service extension is the single
+        // source for message banners. Posting a local one too would double every
+        // message (and the local + push copies race on which title shows).
+        if PushConfig.enabled { return }
+        #endif
         guard isAuthorized,
               !room.lastMessageIsOwn,
               room.unreadNotifications > 0,
@@ -154,8 +160,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 .removeDeliveredNotifications(withIdentifiers: ["call-\(room.id)"])
         }
         guard room.hasActiveCall, !wasActive else { return }
-        // Ring in-app unless we started this call ourselves.
-        if !CallRegistry.localRooms.contains(room.id) {
+        // Ring in-app only for 1:1 calls (and not one we started ourselves);
+        // group calls are announced by a banner, not a ringtone.
+        if room.isDirect, !CallRegistry.localRooms.contains(room.id) {
             onIncomingCall?(room)
         }
         guard isAuthorized else { return }
@@ -277,7 +284,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        let playSound = await MainActor.run { Preferences.shared.notificationSound }
+        // Remote pushes (room_id) and local ones (roomId) both carry the room.
+        let info = notification.request.content.userInfo
+        let roomId = (info["room_id"] as? String) ?? (info["roomId"] as? String)
+        let (suppressed, playSound) = await MainActor.run {
+            (roomId != nil && roomId == self.focusedRoomId,
+             Preferences.shared.notificationSound)
+        }
+        // Don't banner a message for the room already on screen.
+        if suppressed { return [] }
         return playSound ? [.banner, .sound, .list] : [.banner, .list]
     }
 }

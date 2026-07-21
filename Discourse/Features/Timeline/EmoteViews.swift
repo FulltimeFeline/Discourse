@@ -6,18 +6,23 @@ enum InlineEmotes {
     /// `":shortcode:" → mxc URL` map. The plain-text body carries the same
     /// tokens (the img alt text), which is where rendering swaps them in.
     static func parse(html: String) -> [String: String] {
-        guard html.contains("data-mx-emoticon") else { return [:] }
+        guard html.contains("<img") else { return [:] }
         var found: [String: String] = [:]
         let range = NSRange(html.startIndex..., in: html)
         imgTag.enumerateMatches(in: html, range: range) { match, _, _ in
             guard let match, let tagRange = Range(match.range, in: html) else { return }
             let tag = String(html[tagRange])
-            guard tag.contains("data-mx-emoticon"),
-                  let url = attribute("src", in: tag), url.hasPrefix("mxc://"),
+            guard let url = attribute("src", in: tag), url.hasPrefix("mxc://"),
                   let name = attribute("alt", in: tag) ?? attribute("title", in: tag)
             else { return }
             let trimmed = name.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
             guard !trimmed.isEmpty else { return }
+            // Accept the explicit MSC2545 marker, or any mxc image whose alt/
+            // title is a `:shortcode:` token — some clients omit the attribute.
+            let isEmote = tag.contains("data-mx-emoticon")
+                || (name.hasPrefix(":") && name.hasSuffix(":")
+                    && trimmed.allSatisfy(CustomEmojiStore.isShortcodeCharacter))
+            guard isEmote else { return }
             found[":\(trimmed):"] = url
         }
         return found

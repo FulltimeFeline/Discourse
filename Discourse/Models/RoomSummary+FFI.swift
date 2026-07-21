@@ -39,6 +39,7 @@ extension RoomSummary {
         isFavourite = info.isFavourite
         isLowPriority = info.isLowPriority
         hasActiveCall = info.hasRoomCall
+        callParticipantIds = info.activeRoomCallParticipants
         dmUserId = isDirect ? info.heroes.first?.userId : nil
         isInvited = info.membership == .invited
     }
@@ -94,7 +95,12 @@ extension RoomSummary {
         case .msgLike(let msgLike):
             switch msgLike.kind {
             case .message(let message):
-                return message.body.replacingOccurrences(of: "\n", with: " ")
+                // Replies: drop the "> <@user> …" fallback and mark with ↩, so
+                // the sidebar preview shows the reply text, not the quoted one.
+                let isReply = msgLike.inReplyTo != nil
+                let stripped = TimelineEntry.strippedReplyFallback(message.body, isReply: isReply)
+                    .replacingOccurrences(of: "\n", with: " ")
+                return isReply ? "↩ \(stripped)" : stripped
             case .sticker(let body, _, _):
                 return "Sticker: \(body)"
             case .poll(let question, _, _, _, _, _, _):

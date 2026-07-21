@@ -40,7 +40,18 @@ struct DiscourseApp: App {
                 // Stop sync cleanly before suspension, under a short background
                 // assertion. macOS stays always-on (powers local notifications
                 // with its windows closed).
-                pauseSyncForBackground(scope)
+                //
+                // EXCEPT during a call: MatrixRTC keeps you in the call with a
+                // server-side "delayed leave" dead-man's switch that the SDK has
+                // to keep refreshing over sync. Pausing sync (or letting the
+                // process suspend) stalls those refreshes, the server fires the
+                // leave, and every other participant sees you drop out — most
+                // visibly when you're idle/not speaking and the app backgrounds.
+                // The `audio` background mode + the call's active audio session
+                // keep the process alive to carry on syncing.
+                if appState.activeCallRoomIds.isEmpty {
+                    pauseSyncForBackground(scope)
+                }
                 #endif
             case .active:
                 scope.presence.resume()
@@ -235,6 +246,7 @@ struct MainWindow: View {
             // At the root so the rail's avatars load too, not just the columns.
             .environment(\.mediaLoader, scope.mediaLoader)
             .environment(\.presenceService, scope.presence)
+            .environment(\.pronounsStore, scope.pronouns)
             .overlay(alignment: .top) {
                 if let call = appState.ringingCall {
                     IncomingCallView(call: call) {
@@ -654,6 +666,7 @@ struct MainWindow: View {
         return layoutRoot
         .environment(\.mediaLoader, scope.mediaLoader)
         .environment(\.presenceService, scope.presence)
+            .environment(\.pronounsStore, scope.pronouns)
         .task {
             // Monitor and profile don't depend on the room list; run them
             // alongside start(). Plain Tasks (not async let) inherit the main

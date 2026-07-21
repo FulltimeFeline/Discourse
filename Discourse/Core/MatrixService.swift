@@ -1,4 +1,5 @@
 import Foundation
+import os
 @preconcurrency import MatrixRustSDK
 
 /// Runs `operation` with a wall-clock timeout; returns true if it completed,
@@ -73,6 +74,11 @@ final class SessionDelegate: ClientSessionDelegate {
 final class MatrixService: @unchecked Sendable {
     let client: Client
     let userId: String
+    /// Our own server name (the `domain` in `@user:domain`).
+    var ownServerName: String {
+        guard let colon = userId.firstIndex(of: ":") else { return "" }
+        return String(userId[userId.index(after: colon)...])
+    }
     /// Retained so the token-refresh delegate outlives client construction.
     private let sessionDelegate: SessionDelegate?
 
@@ -104,6 +110,11 @@ final class MatrixService: @unchecked Sendable {
     private var latestSyncState: SyncServiceState = .idle
     /// Debounce so a burst of send errors schedules one re-enable.
     private var queueReenableScheduled = false
+    /// Client-API base URL for manual REST calls (extended profile), resolved
+    /// once via `.well-known` so we hit the delegated homeserver
+    /// (e.g. matrix.example.com) rather than the bare server name, which may
+    /// 404 the client API.
+    private var resolvedAPIBase: URL?
 
     #if os(macOS)
     /// Held while sync runs so App Nap can't throttle the sliding-sync long-poll
@@ -136,8 +147,15 @@ final class MatrixService: @unchecked Sendable {
         // Offline mode: the SDK serves cached data and reports `.offline`
         // (which the room list already renders) instead of churning `.error`
         // while the network is down.
+        // Room-list timeline limit: makes the room-list sync return each room's
+        // latest event, so sidebar previews populate WITHOUT subscribing to every
+        // room. Blanket-subscribing (the old approach) produced a ~12k request
+        // per sync and, more importantly, the receipts/typing extensions
+        // (scoped to subscribed rooms) don't stream live under that load — this
+        // is why read receipts and typing were frozen.
         let sync = try await client.syncService()
             .withOfflineMode()
+            .withRoomListTimelineLimit(limit: 1)
             .finish()
         syncService = sync
         roomListService = sync.roomListService()
@@ -210,18 +228,28 @@ final class MatrixService: @unchecked Sendable {
     #if os(iOS)
     /// Registers this device's APNs token as a Matrix pusher, so the homeserver
     /// forwards events to the push gateway while the app is suspended.
-    func registerPusher(deviceTokenHex: String) async {
-        try? await client.setPusher(
-            identifiers: PusherIdentifiers(pushkey: deviceTokenHex, appId: PushConfig.appId),
-            kind: .http(data: HttpPusherData(
-                url: PushConfig.pushGatewayURL,
-                format: .eventIdOnly,
-                defaultPayload: #"{"aps":{"mutable-content":1,"alert":{"loc-key":"New message"}}}"#)),
-            appDisplayName: "Discourse",
-            deviceDisplayName: "Discourse (iOS)",
-            profileTag: nil,
-            lang: "en",
-            append: false)
+    func registerPusher(pushkey: String) async {
+        let log = Logger(subsystem: "dev.discourse.push", category: "pusher")
+        do {
+            try await client.setPusher(
+                identifiers: PusherIdentifiers(pushkey: pushkey, appId: PushConfig.appId),
+                kind: .http(data: HttpPusherData(
+                    url: PushConfig.pushGatewayURL,
+                    format: .eventIdOnly,
+                    // mutable-content:1 wakes the NSE to decrypt; the literal
+                    // alert is the visible fallback if the NSE can't run. (A
+                    // `loc-key` here would need a matching localized string or
+                    // iOS shows nothing.)
+                    defaultPayload: #"{"aps":{"mutable-content":1,"sound":"default","alert":{"title":"Discourse","body":"New message"}}}"#)),
+                appDisplayName: "Discourse",
+                deviceDisplayName: "Discourse (iOS)",
+                profileTag: nil,
+                lang: "en",
+                append: false)
+            log.info("setPusher OK — appId=\(PushConfig.appId, privacy: .public) gateway=\(PushConfig.pushGatewayURL, privacy: .public) pushkey=\(pushkey.prefix(8), privacy: .public)…")
+        } catch {
+            log.error("setPusher FAILED: \(error, privacy: .public)")
+        }
     }
     #endif
 
@@ -426,7 +454,7 @@ final class MatrixService: @unchecked Sendable {
     /// reader, so this hits the client-server API directly. nil = absent/error.
     func stateEventContent(roomId: String, type: String) async -> [String: Any]? {
         guard let session = try? client.session(),
-              let base = URL(string: session.homeserverUrl) else { return nil }
+              let base = await apiBase() else { return nil }
         let url = base.appending(path: "_matrix/client/v3/rooms/\(roomId)/state/\(type)")
         var request = URLRequest(url: url)
         request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
@@ -435,6 +463,336 @@ final class MatrixService: @unchecked Sendable {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return json
+    }
+
+    /// Writes a room state event (empty state key). Returns true on 2xx — false
+    /// includes M_FORBIDDEN when the user lacks permission in the room.
+    @discardableResult
+    /// Whether the signed-in user is allowed to send a given state event in a
+    /// room — used to hide edit controls (e.g. a space banner) the user has no
+    /// power to change, rather than letting them try and fail.
+    func canSendStateEvent(roomId: String, type: String) async -> Bool {
+        guard let room = try? client.getRoom(roomId: roomId),
+              let levels = try? await room.getPowerLevels() else { return false }
+        return levels.canOwnUserSendState(stateEvent: .custom(value: type))
+    }
+
+    func setStateEvent(roomId: String, type: String, content: [String: Any]) async -> Bool {
+        guard let session = try? client.session(),
+              let base = await apiBase() else { return false }
+        let url = base.appending(path: "_matrix/client/v3/rooms/\(roomId)/state/\(type)/")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: content)
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code)
+        else { return false }
+        return true
+    }
+
+    /// Custom profile keys clients use for pronouns (there's no single standard
+    /// yet — MSC4133 extended profiles are namespaced per client). Read all,
+    /// write the common ones so pronouns interoperate across clients.
+    private static let pronounKeys = ["foxchat.pronouns", "pronouns",
+                                      "io.fsky.nyx.pronouns", "m.pronouns"]
+
+    /// The true read-receipt positions for a room, straight from the sliding-
+    /// sync receipts extension: `userId -> eventId` of each user's latest read
+    /// event. The SDK's timeline mis-places the receipt on the *newest* event
+    /// (leaves it a message behind), so the timeline reads this to correct it.
+    /// Returns nil on failure (so we don't wipe existing receipts).
+    /// One room's ephemeral state (read receipts + typing), read from regular
+    /// `/sync` — which, unlike the sliding-sync extensions, gives the FULL
+    /// receipt state (every reader, so avatars stack) and streams typing.
+    /// `since == nil` is the initial snapshot; pass the returned `nextBatch`
+    /// with a long `timeout` to stream changes in real time. `receipts` is
+    /// `userId -> eventId` for readers present in THIS batch; `typing` is the
+    /// current typer list when a typing event was included (else nil).
+    struct RoomEphemerals {
+        var receipts: [String: String]
+        var typing: [String]?
+        var nextBatch: String?
+    }
+
+    func fetchRoomEphemerals(roomId: String, since: String?) async -> RoomEphemerals? {
+        guard let session = try? client.session(),
+              let base = URL(string: session.homeserverUrl) else { return nil }
+        let filter: [String: Any] = [
+            "room": [
+                "rooms": [roomId],
+                "ephemeral": ["types": ["m.receipt", "m.typing"], "limit": 100],
+                "timeline": ["limit": 0],
+                "state": ["types": [] as [String]],
+            ],
+            "presence": ["types": [] as [String]],
+            "account_data": ["types": [] as [String]],
+        ]
+        guard let filterData = try? JSONSerialization.data(withJSONObject: filter),
+              let filterString = String(data: filterData, encoding: .utf8),
+              var components = URLComponents(
+                url: base.appending(path: "_matrix/client/v3/sync"), resolvingAgainstBaseURL: false)
+        else { return nil }
+        var query = [
+            URLQueryItem(name: "filter", value: filterString),
+            // Snapshot returns immediately; streaming long-polls up to 30s.
+            URLQueryItem(name: "timeout", value: since == nil ? "0" : "30000"),
+        ]
+        if let since { query.append(URLQueryItem(name: "since", value: since)) }
+        components.queryItems = query
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 45
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let nextBatch = json["next_batch"] as? String
+        let room = ((json["rooms"] as? [String: Any])?["join"] as? [String: Any])?[roomId] as? [String: Any]
+        let events = (room?["ephemeral"] as? [String: Any])?["events"] as? [[String: Any]] ?? []
+        var receipts: [String: String] = [:]
+        var receiptTs: [String: Double] = [:]
+        var typing: [String]?
+        for event in events {
+            switch event["type"] as? String {
+            case "m.receipt":
+                guard let content = event["content"] as? [String: Any] else { continue }
+                for (eventId, value) in content {
+                    guard let read = (value as? [String: Any])?["m.read"] as? [String: Any] else { continue }
+                    for (userId, meta) in read {
+                        let ts = (meta as? [String: Any])?["ts"] as? Double ?? 0
+                        if ts >= (receiptTs[userId] ?? -1) { receiptTs[userId] = ts; receipts[userId] = eventId }
+                    }
+                }
+            case "m.typing":
+                typing = (event["content"] as? [String: Any])?["user_ids"] as? [String] ?? []
+            default:
+                break
+            }
+        }
+        return RoomEphemerals(receipts: receipts, typing: typing, nextBatch: nextBatch)
+    }
+
+    // Commet-compatible extended-profile fields (MSC4133).
+    static let bioKey = "chat.commet.profile_bio"
+    static let statusKey = "chat.commet.profile_status"
+    static let bannerKey = "chat.commet.profile_banner"
+    /// MSC4175 standard timezone key. Note: MSC4133 reserves the `m.*` namespace,
+    /// and servers that implement extended profiles but NOT MSC4175 (e.g.
+    /// Tuwunel) silently reject writes to it — so the field would never persist.
+    static let timezoneKey = "m.tz"
+    /// Non-reserved fallback so timezone survives on such servers. We write both
+    /// and read either (preferring the standard key).
+    static let timezoneKeyFallback = "chat.commet.profile_timezone"
+    static let socialLinksKey = "foxchat.social_links"
+
+    /// One entry in `foxchat.social_links`: a labeled external link with an
+    /// optional icon (mxc or https URL).
+    struct SocialLink: Hashable, Identifiable {
+        var id: String { "\(title)\u{1}\(link)" }
+        var img: String?
+        var title: String
+        var link: String
+    }
+
+    struct ProfileInfo {
+        var displayName: String?
+        var avatarURL: String?
+        var pronouns: String?
+        var bio: String?
+        var status: String?
+        var bannerURL: String?
+        var timezone: String?
+        var socialLinks: [SocialLink] = []
+    }
+
+    /// A user's (federated) profile in one request: displayname, avatar, and the
+    /// Commet extended-profile fields (bio, status, banner, timezone, pronouns).
+    /// nil on failure.
+    /// The client-API base URL, resolving `.well-known/matrix/client` once so
+    /// delegated deployments (server name ≠ client host) work. Falls back to the
+    /// session's homeserver URL if resolution fails.
+    private func apiBase() async -> URL? {
+        if let cached = profileCacheLock.withLock({ resolvedAPIBase }) { return cached }
+        guard let session = try? client.session(),
+              let raw = URL(string: session.homeserverUrl) else { return nil }
+        let resolved = await Self.resolveClientAPIBase(serverURL: raw) ?? raw
+        profileCacheLock.withLock { resolvedAPIBase = resolved }
+        return resolved
+    }
+
+    /// Per-server client-API base cache for cross-server profile lookups.
+    private var serverBaseCache: [String: URL] = [:]
+
+    /// Serializes the two profile-fetch URL caches (`resolvedAPIBase` +
+    /// `serverBaseCache`). `fetchProfile` fans out concurrently — one Task per
+    /// call participant when the participant strip resolves everyone's pronouns/
+    /// avatars at once — and this class is `@unchecked Sendable`, so without a
+    /// lock those concurrent Dictionary mutations corrupt the heap and crash the
+    /// app mid-call (a SIGBUS in profile fetch), which drops the call for every
+    /// participant and relaunches into a rejoin loop. Never held across `await`.
+    private let profileCacheLock = OSAllocatedUnfairLock()
+
+    /// The client-API base URL for a Matrix server name (the `domain` in
+    /// `@user:domain`), resolving its `.well-known/matrix/client` so we can query
+    /// a remote user's *own* homeserver directly. This matters because Matrix
+    /// federation doesn't relay custom extended-profile fields (bio/status/etc.)
+    /// — the origin server does return them, and profiles are world-readable.
+    private func serverAPIBase(forUserId userId: String) async -> URL? {
+        guard let colon = userId.firstIndex(of: ":") else { return await apiBase() }
+        let server = String(userId[userId.index(after: colon)...])
+        if let cached = profileCacheLock.withLock({ serverBaseCache[server] }) { return cached }
+        guard let serverURL = URL(string: "https://\(server)") else { return await apiBase() }
+        let resolved = await Self.resolveClientAPIBase(serverURL: serverURL) ?? serverURL
+        profileCacheLock.withLock { serverBaseCache[server] = resolved }
+        return resolved
+    }
+
+    /// Resolves `.well-known/matrix/client` → `m.homeserver.base_url` for a
+    /// server URL. Returns nil if there's no delegation (caller falls back).
+    private static func resolveClientAPIBase(serverURL: URL) async -> URL? {
+        let wellKnown = serverURL.appending(path: ".well-known/matrix/client")
+        guard let (data, response) = try? await URLSession.shared.data(from: wellKnown),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hs = (json["m.homeserver"] as? [String: Any])?["base_url"] as? String,
+              let url = URL(string: hs.hasSuffix("/") ? String(hs.dropLast()) : hs) else { return nil }
+        return url
+    }
+
+    func fetchProfile(userId: String) async -> ProfileInfo? {
+        guard let session = try? client.session(),
+              let base = await serverAPIBase(forUserId: userId) else { return nil }
+        let url = base.appending(path: "_matrix/client/v3/profile/\(userId)")
+        var request = URLRequest(url: url)
+        // Profiles are world-readable; only attach our token when the query goes
+        // to our own homeserver, never leaking it to a remote server.
+        if userId.hasSuffix(":\(ownServerName)") {
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        var pronouns: String?
+        for key in Self.pronounKeys {
+            let raw = (json[key] as? String) ?? ((json[key] as? [String: Any])?["body"] as? String)
+            if let value = raw?.trimmingCharacters(in: .whitespaces), !value.isEmpty { pronouns = value; break }
+        }
+        func nonEmpty(_ s: String?) -> String? {
+            let t = s?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (t?.isEmpty == false) ? t : nil
+        }
+        let socialLinks: [SocialLink] = (json[Self.socialLinksKey] as? [[String: Any]] ?? [])
+            .compactMap { entry in
+                guard let link = nonEmpty(entry["link"] as? String) else { return nil }
+                let title = nonEmpty(entry["title"] as? String) ?? link
+                return SocialLink(img: nonEmpty(entry["img"] as? String), title: title, link: link)
+            }
+        return ProfileInfo(
+            displayName: json["displayname"] as? String,
+            avatarURL: json["avatar_url"] as? String,
+            pronouns: pronouns,
+            bio: nonEmpty((json[Self.bioKey] as? [String: Any])?["body"] as? String
+                          ?? json[Self.bioKey] as? String),
+            status: nonEmpty(json[Self.statusKey] as? String ?? json["status_msg"] as? String),
+            bannerURL: json[Self.bannerKey] as? String,
+            timezone: nonEmpty(json[Self.timezoneKey] as? String
+                               ?? json[Self.timezoneKeyFallback] as? String),
+            socialLinks: socialLinks)
+    }
+
+    /// Sets one of the signed-in user's extended-profile fields (empty clears).
+    /// `value` may be a String or a JSON object (e.g. bio's `{"body": …}`).
+    @discardableResult
+    func setProfileField(_ key: String, value: Any) async -> Bool {
+        guard let session = try? client.session(),
+              let base = await apiBase() else { return false }
+        let url = base.appending(path: "_matrix/client/v3/profile/\(userId)/\(key)")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [key: value])
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code)
+        else { return false }
+        return true
+    }
+
+    /// Sets our own presence `status_msg` — the field Commet-family clients read
+    /// as the user's status. Empty clears it. `presence: "online"` is required by
+    /// the endpoint.
+    @discardableResult
+    func setPresenceStatus(_ statusMsg: String) async -> Bool {
+        guard let session = try? client.session(),
+              let base = await apiBase() else { return false }
+        let url = base.appending(path: "_matrix/client/v3/presence/\(userId)/status")
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(
+            withJSONObject: ["presence": "online", "status_msg": statusMsg])
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code)
+        else { return false }
+        return true
+    }
+
+    /// Room IDs shared with `userId` (both of us joined), via MSC2666. Returns
+    /// [] when the homeserver doesn't support the endpoint. Paginates through
+    /// `next_batch_token`, capped so a broken server can't loop forever.
+    func mutualRooms(with userId: String) async -> [String] {
+        guard let session = try? client.session(), let base = await apiBase() else { return [] }
+        var joined: [String] = []
+        var batch: String?
+        for _ in 0..<20 {
+            guard var comps = URLComponents(
+                url: base.appending(path: "_matrix/client/unstable/uk.half-shot.msc2666/user/mutual_rooms"),
+                resolvingAgainstBaseURL: false) else { break }
+            comps.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+            if let batch { comps.queryItems?.append(URLQueryItem(name: "batch_token", value: batch)) }
+            guard let url = comps.url else { break }
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ids = json["joined"] as? [String] else { break }
+            joined.append(contentsOf: ids)
+            batch = json["next_batch_token"] as? String
+            if batch == nil { break }
+        }
+        return joined
+    }
+
+    /// A user's pronouns; nil when unset.
+    func fetchPronouns(userId: String) async -> String? {
+        await fetchProfile(userId: userId)?.pronouns
+    }
+
+    /// Sets the signed-in user's own pronouns, writing the common keys (empty
+    /// string clears them). Returns true if at least one write succeeded.
+    @discardableResult
+    func setPronouns(_ pronouns: String) async -> Bool {
+        guard let session = try? client.session(),
+              let base = await apiBase() else { return false }
+        var anySucceeded = false
+        for key in ["pronouns", "foxchat.pronouns"] {
+            let url = base.appending(path: "_matrix/client/v3/profile/\(userId)/\(key)")
+            var request = URLRequest(url: url)
+            request.httpMethod = "PUT"
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [key: pronouns])
+            if let (_, response) = try? await URLSession.shared.data(for: request),
+               let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code) {
+                anySucceeded = true
+            }
+        }
+        return anySucceeded
     }
 
     // MARK: Session lifecycle

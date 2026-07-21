@@ -18,10 +18,15 @@ enum PushConfig {
     /// open the same session/crypto store and decrypt the pushed event.
     static let appGroup = "group.com.riiiiiiiley.Discourse"
 
-    /// Keychain access group (the app's team-prefixed group) so the extension
-    /// can read the restoration token. Resolved at runtime from the app's own
-    /// keychain-access-groups entitlement, so no team id is hardcoded here.
-    static let keychainAccessGroup = "com.riiiiiiiley.Discourse.shared"
+    /// Keychain access group shared by the app and the extension. It MUST carry
+    /// the team-id prefix the OS actually grants: the entitlement value
+    /// `$(AppIdentifierPrefix)com.riiiiiiiley.Discourse.shared` expands to
+    /// `<TeamID>.com.riiiiiiiley.Discourse.shared`, and a keychain query has to
+    /// match that exact string. An un-prefixed literal fails every call with
+    /// `errSecMissingEntitlement` (-34018). Team `44LAW4UL9G` (see project.yml
+    /// DEVELOPMENT_TEAM); the iOS SecTask entitlement-reading APIs don't exist,
+    /// so the prefix is hardcoded here.
+    static let keychainAccessGroup = "44LAW4UL9G.com.riiiiiiiley.Discourse.shared"
 
     /// Matrix pusher app id (APNs). Must match the gateway's app config.
     static let appId = "com.riiiiiiiley.Discourse"

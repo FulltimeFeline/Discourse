@@ -29,6 +29,7 @@ struct MessageItem: Identifiable, Hashable {
         case notice(String)
         case emote(String)
         case image(ImageItem)
+        case video(VideoItem)
         case poll(PollItem)
         case audio(AudioItem)
         case location(body: String, geoUri: String)
@@ -52,6 +53,9 @@ struct MessageItem: Identifiable, Hashable {
         var eventId: String
         var senderName: String
         var snippet: String
+        /// The replied-to event's details aren't loaded yet (the SDK resolves
+        /// them lazily); the view model fetches them so the snippet fills in.
+        var isPending: Bool = false
     }
 
     /// Per-message encryption warning (e.g. sent unencrypted in an E2EE room,

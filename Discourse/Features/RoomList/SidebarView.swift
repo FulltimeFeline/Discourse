@@ -88,8 +88,15 @@ struct SidebarView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 1)
         )
-        // Prime the invite-permission cache for visible rooms (lazy rows).
-        .task { await viewModel.refreshInvitePermission(forRoomId: room.id) }
+        // Prime the invite- and space-move-permission caches for visible rows,
+        // so the context menu (built synchronously) can filter without awaiting.
+        .task {
+            await viewModel.refreshInvitePermission(forRoomId: room.id)
+            await viewModel.refreshMovePermission(forRoomId: room.id)
+            for space in viewModel.spaces {
+                await viewModel.refreshSpaceManagePermission(spaceId: space.id)
+            }
+        }
     }
 
     private func selectionFill(_ isSelected: Bool) -> AnyShapeStyle {
@@ -155,12 +162,20 @@ struct SidebarView: View {
             viewModel.markRead(roomIds: [room.id])
         }
         Divider()
-        if !room.isDirect {
-            if viewModel.spaces.isEmpty {
-                Button("No Spaces Yet") {}.disabled(true)
+        // Only offer the move at all for rooms you can actually re-parent
+        // (needs `m.space.parent` power in the room itself).
+        if !room.isDirect && viewModel.moveableRoomIds.contains(room.id) {
+            // ...and only into spaces whose child list you can edit.
+            let manageableSpaces = viewModel.spaces.filter {
+                viewModel.manageableSpaceIds.contains($0.id)
+            }
+            if manageableSpaces.isEmpty {
+                Button(viewModel.spaces.isEmpty ? "No Spaces Yet"
+                                                : "No Spaces You Can Edit") {}
+                    .disabled(true)
             } else {
                 Menu("Spaces", systemImage: "square.grid.2x2") {
-                    ForEach(viewModel.spaces) { space in
+                    ForEach(manageableSpaces) { space in
                         let isMember = viewModel.spaceChildIds[space.id]?.contains(room.id) == true
                         Button {
                             Task { await viewModel.toggleRoom(room.id, inSpace: space.id) }
@@ -230,7 +245,11 @@ struct SidebarView: View {
                     #if !os(macOS)
                     headerRow
                     #endif
-                    searchField
+                    // Search only in Home; a space's room list is short enough
+                    // that a second search bar is redundant.
+                    if viewModel.selectedSpaceId == nil {
+                        searchField
+                    }
                 }
                 .padding(.bottom, 2)
                 // Backed so the list doesn't scroll visibly under the
@@ -245,8 +264,15 @@ struct SidebarView: View {
                 }
             }
             .task(id: viewModel.selectedSpaceId) {
+                spaceBannerURL = nil
                 if let spaceId = viewModel.selectedSpaceId {
                     await viewModel.refreshInvitePermission(forRoomId: spaceId)
+                    spaceBannerURL = await viewModel.spaceBannerURL(forSpace: spaceId)
+                }
+            }
+            .sheet(isPresented: $showsSpaceHome) {
+                if let space = selectedSpace {
+                    SpaceHomeView(space: space, bannerURL: spaceBannerURL, scope: scope)
                 }
             }
             #if os(macOS)
@@ -351,6 +377,8 @@ struct SidebarView: View {
     }
 
     @State private var showsSpaceMenu = false
+    @State private var spaceBannerURL: String?
+    @State private var showsSpaceHome = false
 
     /// Sync status for the header title; nil once caught up.
     private var headerStatus: String? {
@@ -669,6 +697,25 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func listContent(_ sorted: [RoomSummary]) -> some View {
+            if let banner = spaceBannerURL {
+                Button {
+                    showsSpaceHome = true
+                } label: {
+                    BannerImageView(mxcUrl: banner)
+                        .frame(height: 80)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(alignment: .bottomTrailing) {
+                            Image(systemName: "info.circle.fill")
+                                .foregroundStyle(.white, .black.opacity(0.4))
+                                .padding(6)
+                        }
+                }
+                .buttonStyle(.plain)
+                .help("Space home")
+                .padding(.vertical, 4)
+                .selectionDisabled()
+            }
             if scope.needsVerification {
                 Button {
                     showsVerification = true
@@ -1051,6 +1098,9 @@ struct RoomRow: View {
                             .layoutPriority(1)
                     }
                 }
+                if room.hasActiveCall, !room.callParticipantIds.isEmpty {
+                    CallParticipantsStrip(userIds: room.callParticipantIds)
+                }
                 HStack(spacing: 4) {
                     if let preview = previewText {
                         Text(preview)
@@ -1113,6 +1163,38 @@ struct RoomRow: View {
 
     private func relativeFormat(for date: Date) -> Date.FormatStyle {
         Self.calendar.isDateInToday(date) ? Self.todayFormat : Self.earlierFormat
+    }
+}
+
+/// Discord-style overlapping avatars of who's currently in a room's call.
+/// Real profile pictures via the shared profile cache (falls back to colored
+/// initials until each fetch lands).
+private struct CallParticipantsStrip: View {
+    let userIds: [String]
+    @Environment(\.pronounsStore) private var profiles
+    private let maxShown = 5
+
+    var body: some View {
+        HStack(spacing: -6) {
+            ForEach(userIds.prefix(maxShown), id: \.self) { userId in
+                RoomAvatarView(name: profiles?.displayName(for: userId) ?? Self.localpart(userId),
+                               isDirect: true, size: 18,
+                               avatarURL: profiles?.avatarURL(for: userId))
+                    .overlay(Circle().stroke(Color.platformWindowBackground, lineWidth: 1.5))
+            }
+            if userIds.count > maxShown {
+                Text("+\(userIds.count - maxShown)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 8)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private static func localpart(_ userId: String) -> String {
+        guard userId.hasPrefix("@") else { return userId }
+        return String(userId.dropFirst().prefix { $0 != ":" })
     }
 }
 

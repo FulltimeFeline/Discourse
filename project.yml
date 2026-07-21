@@ -62,6 +62,7 @@ targets:
           - "Info.plist"
       - path: Discourse/Core/SessionStore.swift
       - path: Discourse/Core/PushConfig.swift
+      - path: Discourse/Core/SpaceNameStore.swift
       - path: Discourse/Core/MatrixPlatform.swift
       - path: Discourse/Core/RestorationToken+FFI.swift
     dependencies:
@@ -118,6 +119,11 @@ targets:
         NSHumanReadableCopyright: ""
         UILaunchScreen: {}
         UIApplicationSupportsMultipleScenes: true
+        # Keeps the process alive in the background during a call so the
+        # MatrixRTC membership heartbeat keeps refreshing (see CallViewModel's
+        # audio session) — otherwise other participants see you drop when idle.
+        UIBackgroundModes:
+          - audio
         # iPhone is portrait-only; iPad keeps every orientation.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

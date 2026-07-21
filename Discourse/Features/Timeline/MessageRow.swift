@@ -10,6 +10,7 @@ struct MessageRow: View {
     var jumpToEvent: (String) -> Void = { _ in }
     @Environment(AppState.self) private var appState
     @Environment(Preferences.self) private var prefs
+    @Environment(\.pronounsStore) private var pronounsStore
     @State private var isHovering = false
 
     private var scope: SessionScope? {
@@ -489,6 +490,11 @@ struct MessageRow: View {
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction { openProfile(profileTarget) }
             }
+            if let pronouns = pronounsStore?.pronouns(for: message.sender) {
+                Text(pronouns)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
             Text(message.timestamp, format: timestampFormat)
                 .font(.caption)
                 .monospacedDigit()
@@ -511,7 +517,12 @@ struct MessageRow: View {
         switch message.kind {
         case .text(let body):
             let emotes = effectiveEmotes(in: body)
-            if emotes.isEmpty {
+            if body.split(separator: "\n", omittingEmptySubsequences: false).contains(where: { $0.hasPrefix(">") }) {
+                // Markdown blockquotes: `>`-prefixed lines render as a quote.
+                attributed(QuotedBodyView(rawBody: body, emotes: emotes, loader: viewModel.mediaLoader,
+                                          jumboEmoji: prefs.jumboEmoji, fontScale: fontScale,
+                                          font: scaledBodyFont), spokenBody: body)
+            } else if emotes.isEmpty {
                 if prefs.jumboEmoji, Self.isJumboEmoji(body) {
                     attributed(Text(verbatim: body).font(.system(size: jumboFontSize)) + editedSuffix,
                                spokenBody: body)
@@ -554,6 +565,8 @@ struct MessageRow: View {
             }
         case .image(let image):
             InlineImageView(image: image, loader: viewModel.mediaLoader)
+        case .video(let video):
+            VideoAttachmentView(video: video, loader: viewModel.mediaLoader)
         case .poll(let poll):
             PollView(poll: poll, message: message, viewModel: viewModel)
         case .audio(let audio):
@@ -870,6 +883,63 @@ enum EmojiImageCache {
 
 /// Up to three overlapping reader avatars (plus an overflow count), pinned to
 /// the trailing edge of the last row each user has read.
+/// Renders a message body with markdown blockquotes: consecutive `>`-prefixed
+/// lines become an indented, bar-accented, secondary block; other lines render
+/// normally (with custom emotes). Splits into blocks so quotes and regular text
+/// can interleave.
+private struct QuotedBodyView: View {
+    let rawBody: String
+    let emotes: [String: String]
+    let loader: MediaLoader
+    let jumboEmoji: Bool
+    let fontScale: CGFloat
+    let font: Font
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                if block.isQuote {
+                    HStack(alignment: .top, spacing: 6) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(Color.accentColor.opacity(0.6))
+                            .frame(width: 3)
+                        segment(block.text)
+                            .foregroundStyle(.secondary)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    segment(block.text)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func segment(_ text: String) -> some View {
+        let present = emotes.filter { text.contains($0.key) }
+        if present.isEmpty {
+            Text(RenderedBodyCache.rendered(text)).font(font)
+        } else {
+            EmoteBodyText(body_: text, emotes: present, loader: loader,
+                          jumboEmoji: jumboEmoji, fontScale: fontScale).font(font)
+        }
+    }
+
+    private var blocks: [(text: String, isQuote: Bool)] {
+        var result: [(text: String, isQuote: Bool)] = []
+        for line in rawBody.components(separatedBy: "\n") {
+            let isQuote = line.hasPrefix(">")
+            let text = isQuote ? String(line.drop(while: { $0 == ">" || $0 == " " })) : line
+            if !result.isEmpty, result[result.count - 1].isQuote == isQuote {
+                result[result.count - 1].text += "\n" + text
+            } else {
+                result.append((text, isQuote))
+            }
+        }
+        return result
+    }
+}
+
 struct ReadReceiptStack: View {
     let userIds: [String]
     let viewModel: TimelineViewModel

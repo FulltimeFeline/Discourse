@@ -449,6 +449,9 @@ struct ComposerView: View {
             // Glass tags that spring out of the composer's top edge for
             // typing/reply/edit/error states.
             VStack(alignment: .leading, spacing: 4) {
+                if !viewModel.isEncrypted && prefs.warnUnencrypted {
+                    unencryptedBanner
+                }
                 if prefs.showTypingIndicators, !viewModel.typingUsers.isEmpty {
                     typingIndicator
                         .transition(.appendix)
@@ -796,6 +799,20 @@ struct ComposerView: View {
         }
         .font(.callout)
         .foregroundStyle(.red)
+        .appendixBubble()
+    }
+
+    /// Persistent notice that this room isn't end-to-end encrypted, so messages
+    /// here aren't private the way they are in an encrypted room.
+    private var unencryptedBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.open.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Text("Not encrypted — messages aren't private")
+                .foregroundStyle(.secondary)
+        }
+        .font(.callout)
         .appendixBubble()
     }
 
@@ -1426,6 +1443,10 @@ struct ComposerView: View {
         guard canSend else { return }
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         text = ""
+        // A vertical TextField can commit the submit's newline into the binding
+        // right after this clear (racing onSubmit), leaving a stray line behind.
+        // Re-clear next runloop so the field always ends empty.
+        DispatchQueue.main.async { text = "" }
         #if os(iOS)
         sendCount += 1
         if prefs.sendMessageHaptic { hapticTick += 1 }

@@ -37,6 +37,10 @@ struct CallView: View {
         #endif
         .task { await viewModel.start() }
         .onDisappear { viewModel.stop() }
+        // Element Call reported a hangup/leave: close the call window.
+        .onChange(of: viewModel.didHangUp) { _, hungUp in
+            if hungUp { dismiss() }
+        }
     }
 
     private var header: some View {

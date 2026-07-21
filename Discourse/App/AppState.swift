@@ -302,6 +302,7 @@ final class SessionScope {
     let stickers: StickerStore
     let customEmoji: CustomEmojiStore
     let presence: PresenceService
+    let pronouns: PronounsStore
 
     struct IncomingVerification: Identifiable, Equatable {
         var id: String { flowId }
@@ -316,12 +317,28 @@ final class SessionScope {
     private(set) var ownAvatarURL: String?
     private(set) var ownDisplayName: String?
 
+    /// Own extended-profile fields (Settings → Account).
+    private(set) var ownPronouns: String?
+    private(set) var ownBio: String?
+    private(set) var ownStatus: String?
+    private(set) var ownTimezone: String?
+    private(set) var ownBannerURL: String?
+    private(set) var ownSocialLinks: [MatrixService.SocialLink] = []
+
     func loadOwnProfile() async {
         if let url = try? await service.client.avatarUrl() {
             ownAvatarURL = url
         }
         if let name = try? await service.client.displayName() {
             ownDisplayName = name
+        }
+        if let profile = await service.fetchProfile(userId: service.userId) {
+            ownPronouns = profile.pronouns
+            ownBio = profile.bio
+            ownStatus = profile.status
+            ownTimezone = profile.timezone
+            ownBannerURL = profile.bannerURL
+            ownSocialLinks = profile.socialLinks
         }
     }
 
@@ -332,6 +349,56 @@ final class SessionScope {
         ownDisplayName = name
     }
 
+    func setPronouns(_ value: String) async {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        await service.setPronouns(trimmed)
+        let resolved = trimmed.isEmpty ? nil : trimmed
+        ownPronouns = resolved
+        pronouns.setLocal(resolved, for: service.userId)
+    }
+
+    func setBio(_ value: String) async {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Bio is an object with a `body`, per Commet's schema.
+        await service.setProfileField(MatrixService.bioKey, value: ["body": trimmed])
+        ownBio = trimmed.isEmpty ? nil : trimmed
+        pronouns.invalidate(service.userId)
+    }
+
+    func setStatus(_ value: String) async {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        // Commet-family clients read the status from presence `status_msg`; also
+        // keep the profile field for clients that read that instead.
+        await service.setPresenceStatus(trimmed)
+        await service.setProfileField(MatrixService.statusKey, value: trimmed)
+        ownStatus = trimmed.isEmpty ? nil : trimmed
+        pronouns.invalidate(service.userId)
+    }
+
+    func setTimezone(_ value: String) async {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        // Write the standard MSC4175 key (for interop) AND a non-reserved
+        // fallback: servers like Tuwunel reject `m.tz`, so the fallback is what
+        // actually persists and reads back — otherwise the field looks emptied.
+        await service.setProfileField(MatrixService.timezoneKey, value: trimmed)
+        await service.setProfileField(MatrixService.timezoneKeyFallback, value: trimmed)
+        ownTimezone = trimmed.isEmpty ? nil : trimmed
+        pronouns.invalidate(service.userId)
+    }
+
+    func setSocialLinks(_ links: [MatrixService.SocialLink]) async {
+        // [String: String] (not [String: Any]) so the payload stays Sendable
+        // across the actor hop into the service.
+        let payload: [[String: String]] = links.map { link in
+            var dict: [String: String] = ["title": link.title, "link": link.link]
+            if let img = link.img, !img.isEmpty { dict["img"] = img }
+            return dict
+        }
+        await service.setProfileField(MatrixService.socialLinksKey, value: payload)
+        ownSocialLinks = links
+        pronouns.invalidate(service.userId)
+    }
+
     func setAvatar(data: Data, mimeType: String) async throws {
         try await service.client.uploadAvatar(mimeType: mimeType, data: data)
         await loadOwnProfile()
@@ -340,6 +407,50 @@ final class SessionScope {
     func removeAvatar() async throws {
         try await service.client.removeAvatar()
         ownAvatarURL = nil
+    }
+
+    /// Uploads an image and sets it as the Commet profile banner.
+    func setBanner(data: Data, mimeType: String) async throws {
+        let mxc = try await service.client.uploadMedia(mimeType: mimeType, data: data,
+                                                       progressWatcher: nil)
+        await service.setProfileField(MatrixService.bannerKey, value: mxc)
+        ownBannerURL = mxc
+        pronouns.invalidate(service.userId)
+    }
+
+    func removeBanner() async {
+        await service.setProfileField(MatrixService.bannerKey, value: "")
+        ownBannerURL = nil
+        pronouns.invalidate(service.userId)
+    }
+
+    /// Custom state event holding a space's banner image.
+    static let spaceBannerEventType = "page.codeberg.everypizza.room.banner"
+
+    /// Whether this user can change the given space's banner — the edit controls
+    /// hide when this is false rather than offering an action that would fail.
+    func canEditSpaceBanner(spaceId: String) async -> Bool {
+        await service.canSendStateEvent(roomId: spaceId, type: Self.spaceBannerEventType)
+    }
+
+    /// Uploads an image and sets it as a space's banner (state event). Returns
+    /// the new banner mxc URL on success, or nil if the user lacks permission.
+    func setSpaceBanner(spaceId: String, data: Data, mimeType: String) async throws -> String? {
+        let mxc = try await service.client.uploadMedia(mimeType: mimeType, data: data,
+                                                       progressWatcher: nil)
+        let ok = await service.setStateEvent(
+            roomId: spaceId,
+            type: Self.spaceBannerEventType,
+            content: ["url": mxc, "mimetype": mimeType])
+        return ok ? mxc : nil
+    }
+
+    @discardableResult
+    func removeSpaceBanner(spaceId: String) async -> Bool {
+        await service.setStateEvent(
+            roomId: spaceId,
+            type: Self.spaceBannerEventType,
+            content: [:])
     }
     /// Set when another device asks this one to verify; drives a sheet.
     var incomingVerification: IncomingVerification?
@@ -373,9 +484,13 @@ final class SessionScope {
         self.mediaLoader = MediaLoader(client: service.client)
         self.stickers = StickerStore(client: service.client)
         self.customEmoji = CustomEmojiStore(client: service.client)
+        self.pronouns = PronounsStore(service: service)
         self.presence = PresenceService(homeserverUrl: token.session.homeserverUrl,
                                         accessToken: token.session.accessToken,
                                         ownUserId: token.session.userId)
+        // Status comes from presence `status_msg` (Commet's store), so let the
+        // profile cache read it with the profile field as fallback.
+        self.pronouns.presence = self.presence
         customEmoji.spacesProvider = { [weak roomList] in
             roomList?.spaces.map { (id: $0.id, name: $0.name) } ?? []
         }
