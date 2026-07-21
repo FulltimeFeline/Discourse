@@ -73,6 +73,9 @@ struct AboutSettingsView: View {
                     Text("A Matrix client")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    Text("by FulltimeFeline")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
@@ -86,6 +89,9 @@ struct AboutSettingsView: View {
             }
 
             Section {
+                Link(destination: URL(string: "https://github.com/FulltimeFeline/Discourse")!) {
+                    Label("Source on GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
                 Link(destination: URL(string: "https://matrix.org")!) {
                     Label("About the Matrix Protocol", systemImage: "network")
                 }

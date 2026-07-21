@@ -12,7 +12,9 @@ menu-bar commands. iOS gets a navigation stack, swipe actions, and a composer
 that tracks the keyboard. Where the two genuinely differ, the code forks with
 `#if os(...)` instead of pretending they're the same screen.
 
-Under active development, and my daily driver.
+Under active development, and my daily driver. The iPhone and macOS layouts are
+the focus right now; the iPad UI is still unfinished and doesn't yet make proper
+use of the larger screen.
 
 ## Screenshots
 
@@ -63,6 +65,7 @@ or one from an unverified device, instead of hiding them.
 - Presence, multiple accounts at once, and push notifications (APNs on iOS,
   decrypted in the background by a Notification Service Extension).
 - Sign in by password, OAuth/OIDC, or SSO.
+- Fully localized in English and Spanish.
 
 ## A note on calls
 
@@ -101,7 +104,7 @@ The Xcode project isn't committed; it's generated from `project.yml` with
 XcodeGen. Generate it before opening:
 
 ```sh
-git clone https://github.com/riiiiiiiley/Discourse.git
+git clone https://github.com/FulltimeFeline/Discourse.git
 cd Discourse
 xcodegen generate
 open Discourse.xcodeproj
@@ -129,7 +132,7 @@ build is a paid convenience for people who'd rather not compile it themselves.
 
 ## Acknowledgements
 
-Built and maintained by [riiiiiiiley](https://github.com/riiiiiiiley).
+Built and maintained by [FulltimeFeline](https://github.com/FulltimeFeline).
 
 It stands on the [Matrix Rust SDK](https://github.com/matrix-org/matrix-rust-sdk),
 packaged for Swift as
