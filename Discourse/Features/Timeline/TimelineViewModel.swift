@@ -609,18 +609,46 @@ final class TimelineViewModel {
 
     // MARK: Sending
 
-    func sendText(_ text: String) async {
+    private static func htmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// Wraps each mention's `@user:server` token in `base` with a matrix.to
+    /// anchor. Longest tokens first so a shorter id can't match inside a longer
+    /// one. `base` is already HTML-escaped (emoji HTML or escaped plain text).
+    private static func mentionHtml(base: String, mentions: [MentionRef]) -> String {
+        var html = base
+        for mention in mentions.sorted(by: { $0.text.count > $1.text.count }) {
+            let escaped = htmlEscape(mention.text)
+            let anchor = "<a href=\"https://matrix.to/#/\(mention.userId)\">\(escaped)</a>"
+            html = html.replacingOccurrences(of: escaped, with: anchor)
+        }
+        return html
+    }
+
+    func sendText(_ text: String, mentions: [MentionRef] = []) async {
         guard let timeline else {
             // Composer already cleared its field; flush in order once start() has a timeline.
             outboundQueue.append(.text(text))
             return
         }
-        // Known `:shortcode:` custom emoji go out as MSC2545 HTML; everything
-        // else takes the markdown path.
-        let content = if let html = customEmoji?.htmlBody(for: text) {
-            messageEventContentFromHtml(body: text, htmlBody: html)
+        // Mentions and custom emoji both need an HTML formatted body; plain
+        // markdown otherwise. The plain body stays human-readable (the raw
+        // `@user:server` text), and the HTML carries the matrix.to anchors.
+        let emojiHtml = customEmoji?.htmlBody(for: text)
+        var content: RoomMessageEventContentWithoutRelation
+        if !mentions.isEmpty {
+            let html = Self.mentionHtml(base: emojiHtml ?? Self.htmlEscape(text), mentions: mentions)
+            content = messageEventContentFromHtml(body: text, htmlBody: html)
+            // Flag intentional mentions (MSC3952) so the mentioned users are notified.
+            content = content.withMentions(mentions: Mentions(
+                userIds: Array(Set(mentions.map(\.userId))), room: false))
+        } else if let emojiHtml {
+            content = messageEventContentFromHtml(body: text, htmlBody: emojiHtml)
         } else {
-            messageEventContentFromMarkdown(md: text)
+            content = messageEventContentFromMarkdown(md: text)
         }
         sendTypingNotice(false)
         if let target = editTarget, let eventId = target.eventId {
@@ -727,7 +755,7 @@ final class TimelineViewModel {
     var hasPendingAttachments: Bool { !pendingAttachments.isEmpty }
 
     /// Sends staged attachments, then the text (if any).
-    func sendComposed(text: String) async {
+    func sendComposed(text: String, mentions: [MentionRef] = []) async {
         // Chips still loading stay staged for the next send.
         let staged = pendingAttachments.filter { !$0.isLoading }
         pendingAttachments.removeAll { !$0.isLoading }
@@ -760,7 +788,7 @@ final class TimelineViewModel {
             first = false
         }
         if !message.isEmpty {
-            await sendText(message)
+            await sendText(message, mentions: mentions)
         }
     }
 
