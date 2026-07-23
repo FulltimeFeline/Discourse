@@ -12,6 +12,9 @@ final class PushRegistry {
 
     private var pushkey: String?
     private weak var service: MatrixService?
+    /// Services (per account) awaiting a pusher once the APNs token arrives, so
+    /// EVERY signed-in account — not just the active one — gets remote pushes.
+    private var pendingServices: [MatrixService] = []
 
     private let log = Logger(subsystem: "dev.discourse.push", category: "registry")
 
@@ -28,6 +31,9 @@ final class PushRegistry {
     func setDeviceToken(_ pushkey: String) {
         self.pushkey = pushkey
         register()
+        let pending = pendingServices
+        pendingServices = []
+        for service in pending { registerPusher(for: service) }
     }
 
     func setActiveService(_ service: MatrixService?) {
@@ -35,12 +41,27 @@ final class PushRegistry {
         register()
     }
 
+    /// Registers (or removes) a pusher for a specific account's service —
+    /// e.g. a warm background account — respecting its per-account notification
+    /// toggle. Called again when the toggle changes.
+    func registerPusher(for service: MatrixService) {
+        guard gatewayConfigured else { return }
+        let enabled = Preferences.shared.notificationsEnabled(forUserId: service.userId)
+        guard let pushkey else {
+            if enabled { pendingServices.append(service) }
+            return
+        }
+        if enabled {
+            Task { await service.registerPusher(pushkey: pushkey) }
+        } else {
+            Task { await service.removePusher(pushkey: pushkey) }
+        }
+    }
+
     private func register() {
         guard gatewayConfigured else { log.error("gateway not configured: \(PushConfig.pushGatewayURL, privacy: .public)"); return }
-        guard let pushkey else { log.info("waiting for APNs device token"); return }
         guard let service else { log.info("waiting for active session"); return }
-        log.info("registering pusher (token+service+gateway ready)")
-        Task { await service.registerPusher(pushkey: pushkey) }
+        registerPusher(for: service)
     }
 }
 
@@ -64,5 +85,18 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didFailToRegisterForRemoteNotificationsWithError error: Error) {}
+
+    // Opt out of UIKit state restoration. Its background snapshot archive
+    // (`_updateStateRestorationArchiveForBackgroundEvent`) was being built off
+    // the main thread and aborting with "Call must be made on main thread" when
+    // the app backgrounds — e.g. after tapping a notification. We don't use
+    // state restoration (SwiftUI owns navigation state), so decline it.
+    func application(_ application: UIApplication, shouldSaveSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    func application(_ application: UIApplication, shouldRestoreSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
 }
 #endif

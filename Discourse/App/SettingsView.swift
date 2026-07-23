@@ -622,8 +622,12 @@ struct ProfileTabView: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+                                Spacer()
+                                if token.session.userId != appState.activeUserId,
+                                   appState.unreadCount(forUserId: token.session.userId) > 0 {
+                                    UnreadBadge(count: appState.unreadCount(forUserId: token.session.userId))
+                                }
                                 if token.session.userId == appState.activeUserId {
-                                    Spacer()
                                     Image(systemName: "checkmark")
                                         .foregroundStyle(.tint)
                                 }

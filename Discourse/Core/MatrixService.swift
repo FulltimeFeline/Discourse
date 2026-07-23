@@ -230,6 +230,14 @@ final class MatrixService: @unchecked Sendable {
     /// forwards events to the push gateway while the app is suspended.
     func registerPusher(pushkey: String) async {
         let log = Logger(subsystem: "dev.discourse.push", category: "pusher")
+        // Embed this account's user id in the payload so the NSE (and the tap
+        // handler) know which of several signed-in accounts a push belongs to —
+        // the pushkey is shared across accounts, so without this a background
+        // account's push would be decrypted with the wrong (first) session.
+        let escapedUserId = userId.replacingOccurrences(of: "\"", with: "\\\"")
+        let defaultPayload = """
+        {"aps":{"mutable-content":1,"sound":"default","alert":{"title":"Discourse","body":"New message"}},"user_id":"\(escapedUserId)"}
+        """
         do {
             try await client.setPusher(
                 identifiers: PusherIdentifiers(pushkey: pushkey, appId: PushConfig.appId),
@@ -240,15 +248,30 @@ final class MatrixService: @unchecked Sendable {
                     // alert is the visible fallback if the NSE can't run. (A
                     // `loc-key` here would need a matching localized string or
                     // iOS shows nothing.)
-                    defaultPayload: #"{"aps":{"mutable-content":1,"sound":"default","alert":{"title":"Discourse","body":"New message"}}}"#)),
+                    defaultPayload: defaultPayload)),
                 appDisplayName: "Discourse",
                 deviceDisplayName: "Discourse (iOS)",
                 profileTag: nil,
                 lang: "en",
+                // Per-account/per-homeserver pusher list, so replace (not append)
+                // keeps re-registration idempotent instead of duplicating.
                 append: false)
             log.info("setPusher OK — appId=\(PushConfig.appId, privacy: .public) gateway=\(PushConfig.pushGatewayURL, privacy: .public) pushkey=\(pushkey.prefix(8), privacy: .public)…")
         } catch {
             log.error("setPusher FAILED: \(error, privacy: .public)")
+        }
+    }
+
+    /// Deletes this account's pusher, so the homeserver stops sending it pushes
+    /// (used when notifications are turned off for the account).
+    func removePusher(pushkey: String) async {
+        let log = Logger(subsystem: "dev.discourse.push", category: "pusher")
+        do {
+            try await client.deletePusher(
+                identifiers: PusherIdentifiers(pushkey: pushkey, appId: PushConfig.appId))
+            log.info("deletePusher OK for \(self.userId, privacy: .public)")
+        } catch {
+            log.error("deletePusher FAILED: \(error, privacy: .public)")
         }
     }
     #endif
@@ -883,11 +906,6 @@ final class MatrixService: @unchecked Sendable {
             .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
             .sqliteStore(config: SqliteStoreBuilder(dataPath: dataPath, cachePath: cachePath)
                 .passphrase(passphrase: passphrase))
-            // The notification service extension opens the same crypto store in
-            // multi-process mode; the main app must declare cross-process locking
-            // too, or the shared store's lock state corrupts and the app crashes
-            // when sync touches crypto (e.g. after tapping a push).
-            .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: "mainapp"))
             // Login discovers the version; restore already knows it (from the
             // stored session), so it skips the network round-trip — the cold
             // launch no longer waits on the homeserver before showing cached data.

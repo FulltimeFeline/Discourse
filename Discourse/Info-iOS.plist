@@ -42,7 +42,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Discourse uses the microphone for voice and video calls and voice messages.</string>
 	<key>UIApplicationSupportsMultipleScenes</key>
-	<true/>
+	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

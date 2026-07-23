@@ -4,6 +4,7 @@ import SwiftUI
 /// reveals, and whether it chimes.
 struct NotificationSettingsView: View {
     @Environment(Preferences.self) private var prefs
+    @Environment(AppState.self) private var appState
 
     var body: some View {
         @Bindable var prefs = prefs
@@ -25,9 +26,58 @@ struct NotificationSettingsView: View {
             Section {
                 Toggle("Play sound", isOn: $prefs.notificationSound)
             }
+
+            // Per-account notification toggles, so each signed-in account can be
+            // silenced independently. Each row also shows that account's unread.
+            if appState.accountTokens.count > 1 {
+                Section {
+                    ForEach(appState.accountTokens, id: \.session.userId) { token in
+                        let userId = token.session.userId
+                        Toggle(isOn: Binding(
+                            get: { prefs.notificationsEnabled(forUserId: userId) },
+                            set: { appState.setNotificationsEnabled($0, forUserId: userId) }
+                        )) {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(appState.accountDisplayName(forUserId: userId))
+                                        .lineLimit(1)
+                                    Text(userId)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                if appState.unreadCount(forUserId: userId) > 0,
+                                   userId != appState.activeUserId {
+                                    UnreadBadge(count: appState.unreadCount(forUserId: userId))
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Accounts")
+                } footer: {
+                    Text("Turn notifications on or off for each account.")
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle("Notifications")
+    }
+}
+
+/// A small pill showing an unread count (capped at 99+), for account rows and
+/// tab/switcher badges.
+struct UnreadBadge: View {
+    let count: Int
+    var body: some View {
+        Text(count > 99 ? "99+" : "\(count)")
+            .font(.caption2.weight(.bold))
+            .monospacedDigit()
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.red, in: Capsule())
     }
 }
 

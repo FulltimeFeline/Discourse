@@ -118,7 +118,11 @@ targets:
         CFBundleDisplayName: Discourse
         NSHumanReadableCopyright: ""
         UILaunchScreen: {}
-        UIApplicationSupportsMultipleScenes: true
+        # Single-scene on iOS: multi-scene support made UIKit run its per-scene
+        # background state-restoration snapshot off the main thread, crashing on
+        # background (e.g. after tapping a notification). The detached call window
+        # is macOS-only anyway; iOS uses a full-screen cover.
+        UIApplicationSupportsMultipleScenes: false
         # Keeps the process alive in the background during a call so the
         # MatrixRTC membership heartbeat keeps refreshing (see CallViewModel's
         # audio session) — otherwise other participants see you drop when idle.
