@@ -1,3 +1,5 @@
+import ImageIO
+import UniformTypeIdentifiers
 import UserNotifications
 import os
 @preconcurrency import MatrixRustSDK
@@ -27,6 +29,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // Group by room and let the app clear/suppress a room's banners when it's
         // opened (NotificationManager keys off threadIdentifier / roomId).
         bestAttempt?.threadIdentifier = roomId
+        // Normalize the gateway's snake_case payload to the keys the app's tap
+        // handler reads (roomId/eventId/userId) — same shape as local banners.
+        // Without this, tapping a remote push resolved a nil roomId and never
+        // navigated to the chat.
+        bestAttempt?.userInfo["roomId"] = roomId
+        bestAttempt?.userInfo["eventId"] = eventId
+        if let userId { bestAttempt?.userInfo["userId"] = userId }
 
         Task {
             await enrich(userId: userId, roomId: roomId, eventId: eventId)
@@ -61,6 +70,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 .serverNameOrHomeserverUrl(serverNameOrUrl: token.session.homeserverUrl)
                 .sqliteStore(config: SqliteStoreBuilder(dataPath: dirs.dataPath, cachePath: dirs.cachePath)
                     .passphrase(passphrase: token.storePassphrase))
+                // Cross-process lock so the shared crypto store coordinates with
+                // the main app (which uses holder "mainapp"). Without matching
+                // config the store's lock state corrupts and the app crashes.
+                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: "nse"))
                 .slidingSyncVersionBuilder(versionBuilder: token.session.slidingSyncVersion == "native" ? .native : .none)
                 .build()
             try await client.restoreSession(session: token.session.ffiSession)
@@ -71,10 +84,57 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 return
             }
             apply(item, roomId: roomId)
+            await attachAvatar(client: client, item: item, roomId: roomId)
             nseLog.info("decrypted + enriched notification")
         } catch {
             nseLog.error("enrich failed: \(error, privacy: .public)")
         }
+    }
+
+    /// Downloads the pfp and attaches it as the push's image: a 1:1 shows the
+    /// other person, a room inside a space shows the space, a plain room shows
+    /// the room. Silently no-ops if there's no avatar or the download fails.
+    private func attachAvatar(client: Client, item: NotificationItem, roomId: String) async {
+        guard let content = bestAttempt else { return }
+        let isGroup = item.roomInfo.joinedMembersCount > 2
+        let mxc: String?
+        if !isGroup {
+            // 1:1 — the other party is the sender.
+            mxc = item.senderInfo.avatarUrl ?? item.roomInfo.avatarUrl
+        } else if let spaceAvatar = SpaceNameStore.spaceAvatar(forRoom: roomId) {
+            mxc = spaceAvatar
+        } else {
+            mxc = item.roomInfo.avatarUrl
+        }
+        guard let mxc, let source = try? MediaSource.fromUrl(url: mxc),
+              let data = try? await client.getMediaThumbnail(mediaSource: source, width: 128, height: 128),
+              let png = Self.encodePNG(data) else { return }
+
+        let name = roomId.replacingOccurrences(of: "/", with: "_")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("push-avatar-\(name).png")
+        guard (try? png.write(to: url)) != nil,
+              let attachment = try? UNNotificationAttachment(identifier: "", url: url, options: nil)
+        else { return }
+        content.attachments = [attachment]
+    }
+
+    /// Re-encodes downloaded avatar bytes to PNG so the attachment's type is
+    /// unambiguous (raw server bytes may be JPEG/WebP and fail attachment
+    /// validation against a fixed extension).
+    private static func encodePNG(_ data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 128,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+              ] as CFDictionary) else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(
+            out as CFMutableData, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, cg, nil)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
     }
 
     private func apply(_ item: NotificationItem, roomId: String) {

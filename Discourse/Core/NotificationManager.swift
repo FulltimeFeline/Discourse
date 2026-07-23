@@ -20,7 +20,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
     /// Opens a room on click. Handler may need to switch accounts first, since
     /// every warm account's sync notifies.
-    var openRoom: ((_ roomId: String, _ accountUserId: String?) -> Void)? {
+    var openRoom: ((_ roomId: String, _ eventId: String?, _ accountUserId: String?) -> Void)? {
         didSet { drainPendingActions() }
     }
     var sendReply: ((_ roomId: String, _ text: String, _ accountUserId: String?) -> Void)? {
@@ -34,7 +34,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private enum PendingAction {
         case reply(roomId: String, text: String, accountUserId: String?)
         case markRead(roomId: String, accountUserId: String?)
-        case open(roomId: String, accountUserId: String?)
+        case open(roomId: String, eventId: String?, accountUserId: String?)
     }
     private var pendingActions: [PendingAction] = []
 
@@ -48,13 +48,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 if let sendReply { sendReply(roomId, text, accountUserId) } else { pendingActions.append(action) }
             case .markRead(let roomId, let accountUserId):
                 if let markRoomRead { markRoomRead(roomId, accountUserId) } else { pendingActions.append(action) }
-            case .open(let roomId, let accountUserId):
-                if let openRoom { openRoom(roomId, accountUserId) } else { pendingActions.append(action) }
+            case .open(let roomId, let eventId, let accountUserId):
+                if let openRoom { openRoom(roomId, eventId, accountUserId) } else { pendingActions.append(action) }
             }
         }
     }
     var onIncomingCall: ((RoomSummary) -> Void)?
     var onCallEnded: ((String) -> Void)?
+    /// Resolves an avatar (mxc URL) to PNG bytes for the given account, so a
+    /// notification can show the room/sender pfp. Set by the app.
+    var loadAvatar: ((_ mxcUrl: String, _ accountUserId: String) async -> Data?)?
 
     private var lastNotified: [String: Date] = [:]
     private var lastCallActive: [String: Bool] = [:]
@@ -88,7 +91,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func maybeNotify(room: RoomSummary, spaceName: String? = nil, accountUserId: String) {
+    func maybeNotify(room: RoomSummary, spaceName: String? = nil,
+                     avatarURL: String? = nil, accountUserId: String) {
         #if os(iOS)
         // With remote push on, the notification service extension is the single
         // source for message banners. Posting a local one too would double every
@@ -146,10 +150,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.threadIdentifier = room.id
         content.categoryIdentifier = Self.messageCategoryId
         content.userInfo = ["roomId": room.id, "userId": accountUserId]
-        deliver(content, identifier: "\(room.id)-\(timestamp.timeIntervalSince1970)")
+        deliver(content, identifier: "\(room.id)-\(timestamp.timeIntervalSince1970)",
+                avatarURL: avatarURL, accountUserId: accountUserId)
     }
 
-    func maybeNotifyCall(room: RoomSummary, accountUserId: String) {
+    func maybeNotifyCall(room: RoomSummary, avatarURL: String? = nil, accountUserId: String) {
         let wasActive = lastCallActive[room.id] ?? false
         lastCallActive[room.id] = room.hasActiveCall
         if wasActive && !room.hasActiveCall {
@@ -180,13 +185,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         applySound(to: content)
         content.threadIdentifier = room.id
         content.userInfo = ["roomId": room.id, "userId": accountUserId]
-        deliver(content, identifier: "call-\(room.id)")
+        deliver(content, identifier: "call-\(room.id)",
+                avatarURL: avatarURL, accountUserId: accountUserId)
     }
 
     private var invitesNotified: Set<String> = []
 
     /// One-shot notification when an invite arrives.
-    func maybeNotifyInvite(room: RoomSummary, accountUserId: String) {
+    func maybeNotifyInvite(room: RoomSummary, avatarURL: String? = nil, accountUserId: String) {
         guard isAuthorized, room.isInvited, !invitesNotified.contains(room.id) else { return }
         invitesNotified.insert(room.id)
 
@@ -206,7 +212,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         applySound(to: content)
         content.threadIdentifier = room.id
         content.userInfo = ["roomId": room.id, "userId": accountUserId]
-        deliver(content, identifier: "invite-\(room.id)")
+        deliver(content, identifier: "invite-\(room.id)",
+                avatarURL: avatarURL, accountUserId: accountUserId)
     }
 
     private func applySound(to content: UNMutableNotificationContent) {
@@ -215,9 +222,31 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func deliver(_ content: UNMutableNotificationContent, identifier: String) {
-        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+    private func deliver(_ content: UNMutableNotificationContent, identifier: String,
+                         avatarURL: String? = nil, accountUserId: String? = nil) {
+        Task {
+            // Attach the room/sender/space pfp as the notification's image.
+            if let avatarURL, let accountUserId, let loadAvatar,
+               let data = await loadAvatar(avatarURL, accountUserId),
+               let attachment = Self.avatarAttachment(pngData: data, identifier: identifier) {
+                content.attachments = [attachment]
+            }
+            let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+            try? await UNUserNotificationCenter.current().add(request)
+        }
+    }
+
+    /// Writes avatar PNG bytes to a temp file and wraps it as an attachment.
+    private static func avatarAttachment(pngData: Data, identifier: String) -> UNNotificationAttachment? {
+        let safeName = identifier.replacingOccurrences(of: "/", with: "_")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("notif-\(safeName).png")
+        do {
+            try pngData.write(to: url)
+            return try UNNotificationAttachment(identifier: "", url: url, options: nil)
+        } catch {
+            return nil
+        }
     }
 
     /// Removes a room's delivered banners once it's been read.
@@ -244,9 +273,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse) async {
-        let roomId = response.notification.request.content.userInfo["roomId"] as? String
+        let info = response.notification.request.content.userInfo
+        // Local banners use camelCase; remote pushes arrive snake_case. Accept both
+        // so a tapped remote push still resolves its room/event (it previously read
+        // only "roomId", got nil, and never navigated).
+        let roomId = (info["roomId"] as? String) ?? (info["room_id"] as? String)
+        let eventId = (info["eventId"] as? String) ?? (info["event_id"] as? String)
         // Account that produced the notification (may be absent on older banners).
-        let accountUserId = response.notification.request.content.userInfo["userId"] as? String
+        let accountUserId = (info["userId"] as? String) ?? (info["user_id"] as? String)
         let actionId = response.actionIdentifier
         // Extract off-actor: the response object isn't Sendable.
         let replyText = (response as? UNTextInputNotificationResponse)?.userText
@@ -274,9 +308,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 Platform.activateApp()
                 guard let roomId else { break }
                 if let openRoom {
-                    openRoom(roomId, accountUserId)
+                    openRoom(roomId, eventId, accountUserId)
                 } else {
-                    pendingActions.append(.open(roomId: roomId, accountUserId: accountUserId))
+                    pendingActions.append(.open(roomId: roomId, eventId: eventId,
+                                                accountUserId: accountUserId))
                 }
             }
         }

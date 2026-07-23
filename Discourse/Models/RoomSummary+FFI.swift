@@ -41,6 +41,11 @@ extension RoomSummary {
         hasActiveCall = info.hasRoomCall
         callParticipantIds = info.activeRoomCallParticipants
         dmUserId = isDirect ? info.heroes.first?.userId : nil
+        // DMs rarely set a room avatar; fall back to the other member's (hero)
+        // avatar so the room list and notifications show their pfp.
+        if isDirect, avatarURL == nil {
+            avatarURL = info.heroes.first?.avatarUrl
+        }
         isInvited = info.membership == .invited
     }
 

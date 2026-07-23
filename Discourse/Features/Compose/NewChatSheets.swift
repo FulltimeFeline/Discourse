@@ -83,7 +83,7 @@ struct InviteSheet: View {
                         HStack {
                             Text(query).lineLimit(1)
                             Spacer()
-                            inviteButton(userId: query.trimmingCharacters(in: .whitespaces))
+                            inviteButton(userId: directEntryUserId ?? query.trimmingCharacters(in: .whitespaces))
                                 .buttonStyle(.borderless)
                         }
                     }
@@ -121,11 +121,11 @@ struct InviteSheet: View {
             }
 
             // Full user IDs directory search may miss.
-            if query.hasPrefix("@"), query.contains(":") {
+            if hasDirectEntry {
                 HStack {
                     Text(query).lineLimit(1)
                     Spacer()
-                    inviteButton(userId: query.trimmingCharacters(in: .whitespaces))
+                    inviteButton(userId: directEntryUserId ?? query.trimmingCharacters(in: .whitespaces))
                 }
                 .padding(6)
             }
@@ -141,9 +141,15 @@ struct InviteSheet: View {
         #endif
     }
 
-    private var hasDirectEntry: Bool {
-        query.hasPrefix("@") && query.contains(":")
+    /// A typed user id, normalized: `user:server` is accepted and the leading
+    /// `@` added, so you don't have to type it. nil if it doesn't look like one.
+    private var directEntryUserId: String? {
+        let raw = query.trimmingCharacters(in: .whitespaces)
+        guard raw.contains(":"), !raw.contains(" ") else { return nil }
+        return raw.hasPrefix("@") ? raw : "@\(raw)"
     }
+
+    private var hasDirectEntry: Bool { directEntryUserId != nil }
 
     /// Debounced directory search; `immediate` skips the debounce (keyboard
     /// Search key), running the query right away.
@@ -258,7 +264,7 @@ struct NewDirectMessageSheet: View {
                     // Full user IDs directory search may miss.
                     if hasDirectEntry {
                         Button("Message \(query)") {
-                            startDm(with: query.trimmingCharacters(in: .whitespaces))
+                            startDm(with: directEntryUserId ?? query.trimmingCharacters(in: .whitespaces))
                         }
                         .disabled(isCreating)
                     }
@@ -310,9 +316,9 @@ struct NewDirectMessageSheet: View {
             }
 
             // Full user IDs directory search may miss.
-            if query.hasPrefix("@"), query.contains(":") {
+            if hasDirectEntry {
                 Button("Message \(query)") {
-                    startDm(with: query.trimmingCharacters(in: .whitespaces))
+                    startDm(with: directEntryUserId ?? query.trimmingCharacters(in: .whitespaces))
                 }
             }
 
@@ -330,9 +336,15 @@ struct NewDirectMessageSheet: View {
         #endif
     }
 
-    private var hasDirectEntry: Bool {
-        query.hasPrefix("@") && query.contains(":")
+    /// A typed user id, normalized: `user:server` is accepted and the leading
+    /// `@` added, so you don't have to type it. nil if it doesn't look like one.
+    private var directEntryUserId: String? {
+        let raw = query.trimmingCharacters(in: .whitespaces)
+        guard raw.contains(":"), !raw.contains(" ") else { return nil }
+        return raw.hasPrefix("@") ? raw : "@\(raw)"
     }
+
+    private var hasDirectEntry: Bool { directEntryUserId != nil }
 
     /// Debounced directory search; `immediate` skips the debounce (keyboard
     /// Search key), running the query right away.
