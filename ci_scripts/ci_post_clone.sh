@@ -18,4 +18,12 @@ echo "▸ Generating Discourse.xcodeproj from project.yml…"
 cd "$CI_PRIMARY_REPOSITORY_PATH"
 xcodegen generate
 
-echo "▸ Done — project generated."
+# Xcode Cloud resolves packages with "only use versions from Package.resolved"
+# enforced, but the freshly generated project has no resolved file. Drop the
+# committed, pinned one into the workspace so resolution is deterministic.
+echo "▸ Installing pinned Package.resolved…"
+SWIFTPM_DIR="Discourse.xcodeproj/project.xcworkspace/xcshareddata/swiftpm"
+mkdir -p "$SWIFTPM_DIR"
+cp ci_scripts/Package.resolved "$SWIFTPM_DIR/Package.resolved"
+
+echo "▸ Done — project generated and dependencies pinned."
