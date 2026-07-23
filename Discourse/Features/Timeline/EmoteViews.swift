@@ -95,6 +95,58 @@ enum InlineEmotes {
     }()
 }
 
+/// Parsing for user mentions carried as `matrix.to` anchors in a formatted body.
+enum MentionParser {
+    /// Extracts `<a href="https://matrix.to/#/@user:server">Display</a>` anchors
+    /// as `MentionRef`s. The plain-text body carries the same display text (the
+    /// anchor's inner text), which is where rendering swaps in the pill.
+    static func parse(html: String) -> [MentionRef] {
+        guard html.localizedCaseInsensitiveContains("matrix.to") else { return [] }
+        var found: [MentionRef] = []
+        let range = NSRange(html.startIndex..., in: html)
+        anchorTag.enumerateMatches(in: html, range: range) { match, _, _ in
+            guard let match,
+                  let hrefRange = Range(match.range(at: 1), in: html),
+                  let textRange = Range(match.range(at: 2), in: html) else { return }
+            let href = decodeEntities(String(html[hrefRange]))
+            guard let userId = userId(fromMatrixTo: href) else { return }
+            // Strip any nested tags from the anchor's inner text, then entities.
+            let text = decodeEntities(stripTags(String(html[textRange])))
+            guard !text.isEmpty else { return }
+            found.append(MentionRef(userId: userId, text: text))
+        }
+        return found
+    }
+
+    /// `https://matrix.to/#/@user:server` (optionally URL/HTML-escaped) → the
+    /// `@user:server` id. Returns nil for room/event links.
+    static func userId(fromMatrixTo href: String) -> String? {
+        guard let hashRange = href.range(of: "/#/") else { return nil }
+        let fragment = href[hashRange.upperBound...]
+        // Drop any trailing query/segment and percent-decode.
+        let token = fragment.split(separator: "/").first.map(String.init) ?? String(fragment)
+        let decoded = token.removingPercentEncoding ?? token
+        return decoded.hasPrefix("@") ? decoded : nil
+    }
+
+    private static func stripTags(_ s: String) -> String {
+        s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+    }
+
+    private static func decodeEntities(_ s: String) -> String {
+        s.replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
+    // Group 1: href value; group 2: inner text.
+    private static let anchorTag = try! NSRegularExpression(
+        pattern: "<a\\b[^>]*\\bhref\\s*=\\s*[\"']([^\"']*)[\"'][^>]*>(.*?)</a>",
+        options: [.caseInsensitive, .dotMatchesLineSeparators])
+}
+
 /// Emote bitmaps rasterised to an exact point height so they can sit inline
 /// in `Text` (whose images render at intrinsic size). Keyed url+height.
 @MainActor

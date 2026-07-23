@@ -23,6 +23,13 @@ enum TimelineEntry: Identifiable, Hashable {
     }
 }
 
+/// A user mention: the `@user:server` id plus the display text as it appears
+/// in the plain body (so rendering can locate and pill it).
+struct MentionRef: Hashable {
+    let userId: String
+    let text: String
+}
+
 struct MessageItem: Identifiable, Hashable {
     enum Kind: Hashable {
         case text(String)
@@ -84,6 +91,9 @@ struct MessageItem: Identifiable, Hashable {
     /// MSC2545 custom emoji in this message's formatted body, as
     /// `":shortcode:" → mxc URL`. Rendering swaps the plain-body tokens for images.
     var inlineEmotes: [String: String] = [:]
+    /// User mentions parsed from the formatted body's `matrix.to` anchors. The
+    /// plain body carries the same display text, which rendering swaps for a pill.
+    var mentions: [MentionRef] = []
     var sendState: SendState?
     var canBeRepliedTo: Bool
     /// Other users whose latest read receipt sits on this event; their avatars

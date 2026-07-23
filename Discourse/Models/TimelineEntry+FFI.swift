@@ -193,6 +193,7 @@ extension TimelineEntry {
                     MessageReaction(key: $0.key, senders: $0.senders.map(\.senderId))
                 },
                 inlineEmotes: Self.inlineEmotes(of: msgLike),
+                mentions: Self.mentions(of: msgLike),
                 sendState: sendState,
                 canBeRepliedTo: event.canBeRepliedTo,
                 readReceiptUserIds: event.readReceipts.keys
@@ -377,6 +378,20 @@ extension TimelineEntry {
         }
         guard let formatted, formatted.format == .html else { return [:] }
         return InlineEmotes.parse(html: formatted.body)
+    }
+
+    /// User mentions (matrix.to anchors) from the HTML formatted body. Only
+    /// text-ish messages carry HTML.
+    private static func mentions(of msgLike: MsgLikeContent) -> [MentionRef] {
+        guard case .message(let message) = msgLike.kind else { return [] }
+        let formatted: FormattedBody? = switch message.msgType {
+        case .text(let content): content.formatted
+        case .notice(let content): content.formatted
+        case .emote(let content): content.formatted
+        default: nil
+        }
+        guard let formatted, formatted.format == .html else { return [] }
+        return MentionParser.parse(html: formatted.body)
     }
 
     private static func isEdited(_ msgLike: MsgLikeContent) -> Bool {

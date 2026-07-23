@@ -54,6 +54,10 @@ struct ComposerView: View {
     /// Active "@partial" token at the end of the field, sans the @.
     @State private var mentionQuery: String?
     @State private var mentionSuggestions: [TimelineViewModel.MemberItem] = []
+    /// Mentions the user picked from the autocomplete, so the plain `@Name`
+    /// tokens shown in the field can be turned into real matrix.to links + an
+    /// intentional-mention list at send time.
+    @State private var chosenMentions: [ChosenMention] = []
     /// One row of the `:token:` autocomplete: a custom emote or a unicode
     /// emoji matched by its derived shortcode.
     private enum EmojiSuggestion: Identifiable, Hashable {
@@ -278,15 +282,34 @@ struct ComposerView: View {
         mentionSuggestions = matches
     }
 
-    /// Replaces the trailing "@token" with a matrix.to link; the markdown send
-    /// path turns it into a real mention.
+    /// A picked mention: the `@user:server` token shown in the field, which is
+    /// also the id it resolves to. `send()` turns the token into a real mention.
+    struct ChosenMention {
+        let token: String
+        let userId: String
+    }
+
+    /// Replaces the trailing "@token" with the member's full `@user:server`
+    /// and records it; the send path turns the token into a mention anchor.
     private func insertMention(_ member: TimelineViewModel.MemberItem) {
         guard let atIndex = text.lastIndex(of: "@") else { return }
-        text.replaceSubrange(atIndex...,
-                             with: "[\(member.name)](https://matrix.to/#/\(member.id)) ")
+        text.replaceSubrange(atIndex..., with: "\(member.id) ")
+        chosenMentions.append(ChosenMention(token: member.id, userId: member.id))
         mentionQuery = nil
         mentionSuggestions = []
         isFocused = true
+    }
+
+    /// Mentions whose `@user:server` token is still present in the composed
+    /// text (some may have been edited away), as `MentionRef`s for the send path.
+    private func resolvedMentions(in text: String) -> [MentionRef] {
+        var result: [MentionRef] = []
+        for mention in chosenMentions where text.contains(mention.token) {
+            if !result.contains(where: { $0.userId == mention.userId }) {
+                result.append(MentionRef(userId: mention.userId, text: mention.token))
+            }
+        }
+        return result
     }
 
     // MARK: Custom-emoji autocomplete
@@ -1442,6 +1465,8 @@ struct ComposerView: View {
     private func send() {
         guard canSend else { return }
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let mentions = resolvedMentions(in: message)
+        chosenMentions = []
         text = ""
         // A vertical TextField can commit the submit's newline into the binding
         // right after this clear (racing onSubmit), leaving a stray line behind.
@@ -1451,7 +1476,7 @@ struct ComposerView: View {
         sendCount += 1
         if prefs.sendMessageHaptic { hapticTick += 1 }
         #endif
-        Task { await viewModel.sendComposed(text: message) }
+        Task { await viewModel.sendComposed(text: message, mentions: mentions) }
     }
 
     private func replyBanner(_ target: MessageItem) -> some View {

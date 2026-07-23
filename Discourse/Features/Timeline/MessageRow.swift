@@ -37,6 +37,20 @@ struct MessageRow: View {
                       avatarURL: effectiveAvatarURL)
     }
 
+    /// Intercepts taps on `matrix.to` user links (mention pills) to open the
+    /// member's profile in-app instead of launching the browser. Other links
+    /// fall through to the system.
+    private var mentionURLAction: OpenURLAction {
+        OpenURLAction { url in
+            if let userId = MentionParser.userId(fromMatrixTo: url.absoluteString) {
+                let name = message.mentions.first { $0.userId == userId }?.text
+                openProfile(ProfileTarget(userId: userId, displayName: name, avatarURL: nil))
+                return .handled
+            }
+            return .systemAction
+        }
+    }
+
     private let gutterWidth: CGFloat = 40
     /// Built once; a FormatStyle per hover render hits locale lookup. Locale
     /// am/pm form, used when `use24HourTime` is off.
@@ -160,9 +174,11 @@ struct MessageRow: View {
                                 .presentationCompactAdaptation(.popover)
                         }
                         content
+                            .environment(\.openURL, mentionURLAction)
                     }
                 } else {
                     content
+                        .environment(\.openURL, mentionURLAction)
                 }
                 if prefs.showEventIds, let eventId = message.eventId {
                     Text(eventId)
@@ -527,7 +543,7 @@ struct MessageRow: View {
                     attributed(Text(verbatim: body).font(.system(size: jumboFontSize)) + editedSuffix,
                                spokenBody: body)
                 } else {
-                    attributed(Text(RenderedBodyCache.rendered(body)).font(scaledBodyFont) + editedSuffix,
+                    attributed(Text(RenderedBodyCache.rendered(body, mentions: message.mentions, ownUserId: viewModel.ownUserId)).font(scaledBodyFont) + editedSuffix,
                                spokenBody: body)
                 }
             } else {
@@ -540,7 +556,7 @@ struct MessageRow: View {
         case .notice(let body):
             let emotes = effectiveEmotes(in: body)
             if emotes.isEmpty {
-                attributed((Text(RenderedBodyCache.rendered(body)).font(scaledBodyFont) + editedSuffix)
+                attributed((Text(RenderedBodyCache.rendered(body, mentions: message.mentions, ownUserId: viewModel.ownUserId)).font(scaledBodyFont) + editedSuffix)
                     .foregroundStyle(.secondary), spokenBody: body)
             } else {
                 attributed(EmoteBodyText(body_: body, emotes: emotes,
@@ -810,8 +826,14 @@ enum RenderedBodyCache {
     private static let linkDetector = try? NSDataDetector(
         types: NSTextCheckingResult.CheckingType.link.rawValue)
 
-    static func rendered(_ body: String) -> AttributedString {
-        if let hit = cache.object(forKey: body as NSString) { return hit.value }
+    static func rendered(_ body: String,
+                         mentions: [MentionRef] = [],
+                         ownUserId: String? = nil) -> AttributedString {
+        // Mentions/self-highlight vary the styling, so they're part of the key.
+        let key: NSString = mentions.isEmpty
+            ? body as NSString
+            : "\(body)\u{1}\(ownUserId ?? "")\u{1}\(mentions.map { "\($0.userId)=\($0.text)" }.joined(separator: "\u{2}"))" as NSString
+        if let hit = cache.object(forKey: key) { return hit.value }
         var attributed = (try? AttributedString(
             markdown: body,
             options: AttributedString.MarkdownParsingOptions(
@@ -819,6 +841,15 @@ enum RenderedBodyCache {
                 interpretedSyntax: .inlineOnlyPreservingWhitespace,
                 failurePolicy: .returnPartiallyParsedIfPossible)))
             ?? AttributedString(body)
+
+        // Turn mention display text (carried plainly in the body by clients that
+        // put the matrix.to link only in the HTML) into tappable pill links.
+        for mention in mentions {
+            guard let url = URL(string: "https://matrix.to/#/\(mention.userId)"),
+                  let range = attributed.range(of: mention.text),
+                  attributed[range].runs.allSatisfy({ $0.link == nil }) else { continue }
+            attributed[range].link = url
+        }
 
         // Bare URLs the markdown pass missed. The rendered characters differ
         // from `body` (syntax stripped), so detect over the rendered text.
@@ -833,12 +864,21 @@ enum RenderedBodyCache {
             }
         }
 
-        // One styling pass over every link, authored or detected.
+        // One styling pass over every link, authored or detected. Mentions
+        // (matrix.to user links) render as tinted pills, not underlined links;
+        // a mention of the current user gets a stronger highlight.
         for run in attributed.runs where run.link != nil {
-            attributed[run.range].foregroundColor = .accentColor
-            attributed[run.range].underlineStyle = .single
+            if let mentionedId = run.link.flatMap({ MentionParser.userId(fromMatrixTo: $0.absoluteString) }) {
+                attributed[run.range].foregroundColor = .accentColor
+                attributed[run.range].backgroundColor = .accentColor.opacity(
+                    mentionedId == ownUserId ? 0.30 : 0.15)
+                attributed[run.range].inlinePresentationIntent = .stronglyEmphasized
+            } else {
+                attributed[run.range].foregroundColor = .accentColor
+                attributed[run.range].underlineStyle = .single
+            }
         }
-        cache.setObject(Box(attributed), forKey: body as NSString)
+        cache.setObject(Box(attributed), forKey: key)
         return attributed
     }
 }
