@@ -29,4 +29,18 @@ enum SpaceNameStore {
     static func spaceAvatar(forRoom roomId: String) -> String? {
         (defaults?.dictionary(forKey: avatarsKey) as? [String: String])?[roomId]
     }
+
+    private static let roomAvatarsKey = "roomNotificationAvatars"
+
+    /// `roomId → the mxc URL to show on that room's notification`, resolved by
+    /// the app per its rule (DM → other person, room-in-space → space, else the
+    /// room). The push item's own avatar fields are unreliable in the NSE, so
+    /// this app-provided map is the primary source.
+    static func saveRoomAvatars(_ map: [String: String]) {
+        defaults?.set(map, forKey: roomAvatarsKey)
+    }
+
+    static func roomAvatar(forRoom roomId: String) -> String? {
+        (defaults?.dictionary(forKey: roomAvatarsKey) as? [String: String])?[roomId]
+    }
 }

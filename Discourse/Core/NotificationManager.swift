@@ -3,7 +3,11 @@ import AppKit
 #else
 import UIKit
 #endif
+import UniformTypeIdentifiers
 import UserNotifications
+import os
+
+private let notifLog = Logger(subsystem: "dev.discourse.push", category: "local-notif")
 
 /// Posts local notifications for incoming messages, suppressing them for the
 /// focused room and own messages, and routes clicks back into the app.
@@ -58,6 +62,22 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// Resolves an avatar (mxc URL) to PNG bytes for the given account, so a
     /// notification can show the room/sender pfp. Set by the app.
     var loadAvatar: ((_ mxcUrl: String, _ accountUserId: String) async -> Data?)?
+    /// The label to show for which account a notification is for, or nil to omit
+    /// it (e.g. only one account signed in). Set by the app.
+    var accountLabel: ((_ accountUserId: String) -> String?)?
+
+    /// Appends the owning account in parentheses after the sender — the format
+    /// `SenderName (@account:server)` — so a multi-account user can tell which
+    /// account a banner is for. The sender sits in the subtitle for room
+    /// notifications and in the title for DMs.
+    private func applyAccountLabel(to content: UNMutableNotificationContent, accountUserId: String) {
+        guard let label = accountLabel?(accountUserId), !label.isEmpty else { return }
+        if !content.subtitle.isEmpty {
+            content.subtitle += " (\(label))"
+        } else {
+            content.title += " (\(label))"
+        }
+    }
 
     private var lastNotified: [String: Date] = [:]
     private var lastCallActive: [String: Bool] = [:]
@@ -150,6 +170,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.threadIdentifier = room.id
         content.categoryIdentifier = Self.messageCategoryId
         content.userInfo = ["roomId": room.id, "userId": accountUserId]
+        applyAccountLabel(to: content, accountUserId: accountUserId)
         deliver(content, identifier: "\(room.id)-\(timestamp.timeIntervalSince1970)",
                 avatarURL: avatarURL, accountUserId: accountUserId)
     }
@@ -185,6 +206,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         applySound(to: content)
         content.threadIdentifier = room.id
         content.userInfo = ["roomId": room.id, "userId": accountUserId]
+        applyAccountLabel(to: content, accountUserId: accountUserId)
         deliver(content, identifier: "call-\(room.id)",
                 avatarURL: avatarURL, accountUserId: accountUserId)
     }
@@ -212,6 +234,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         applySound(to: content)
         content.threadIdentifier = room.id
         content.userInfo = ["roomId": room.id, "userId": accountUserId]
+        applyAccountLabel(to: content, accountUserId: accountUserId)
         deliver(content, identifier: "invite-\(room.id)",
                 avatarURL: avatarURL, accountUserId: accountUserId)
     }
@@ -226,13 +249,28 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                          avatarURL: String? = nil, accountUserId: String? = nil) {
         Task {
             // Attach the room/sender/space pfp as the notification's image.
-            if let avatarURL, let accountUserId, let loadAvatar,
-               let data = await loadAvatar(avatarURL, accountUserId),
-               let attachment = Self.avatarAttachment(pngData: data, identifier: identifier) {
-                content.attachments = [attachment]
+            let loader = self.loadAvatar
+            notifLog.info("deliver: avatarURL=\(avatarURL ?? "nil", privacy: .public) account=\(accountUserId ?? "nil", privacy: .public) hasLoader=\(loader != nil)")
+            if let avatarURL, let accountUserId, let loadAvatar = loader {
+                if let data = await loadAvatar(avatarURL, accountUserId) {
+                    notifLog.info("deliver: loaded \(data.count) avatar bytes")
+                    if let attachment = Self.avatarAttachment(pngData: data, identifier: identifier) {
+                        content.attachments = [attachment]
+                        notifLog.info("deliver: attachment built OK")
+                    } else {
+                        notifLog.error("deliver: attachment build FAILED")
+                    }
+                } else {
+                    notifLog.error("deliver: loadAvatar returned nil")
+                }
             }
             let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
-            try? await UNUserNotificationCenter.current().add(request)
+            do {
+                try await UNUserNotificationCenter.current().add(request)
+                notifLog.info("deliver: request added (attachments=\(content.attachments.count))")
+            } catch {
+                notifLog.error("deliver: add failed \(error, privacy: .public)")
+            }
         }
     }
 
@@ -243,7 +281,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             .appendingPathComponent("notif-\(safeName).png")
         do {
             try pngData.write(to: url)
-            return try UNNotificationAttachment(identifier: "", url: url, options: nil)
+            return try UNNotificationAttachment(
+                identifier: "avatar", url: url,
+                options: [UNNotificationAttachmentOptionsTypeHintKey: UTType.png.identifier])
         } catch {
             return nil
         }
@@ -271,20 +311,24 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     // MARK: UNUserNotificationCenterDelegate
 
+    // Completion-handler variants (not the async ones): the delegate itself must
+    // stay `nonisolated` to receive the non-Sendable response, but its completion
+    // must fire on the MAIN thread — UIKit runs its post-delegate state-restoration
+    // snapshot on whatever thread completes, and off-main it aborts with "Call
+    // must be made on main thread". So we extract the Sendable values here, hop to
+    // the main actor to do the work, and call the completion handler from there.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            didReceive response: UNNotificationResponse) async {
+                                            didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
         let info = response.notification.request.content.userInfo
-        // Local banners use camelCase; remote pushes arrive snake_case. Accept both
-        // so a tapped remote push still resolves its room/event (it previously read
-        // only "roomId", got nil, and never navigated).
+        // Local banners use camelCase; remote pushes arrive snake_case. Accept both.
         let roomId = (info["roomId"] as? String) ?? (info["room_id"] as? String)
         let eventId = (info["eventId"] as? String) ?? (info["event_id"] as? String)
-        // Account that produced the notification (may be absent on older banners).
         let accountUserId = (info["userId"] as? String) ?? (info["user_id"] as? String)
         let actionId = response.actionIdentifier
-        // Extract off-actor: the response object isn't Sendable.
         let replyText = (response as? UNTextInputNotificationResponse)?.userText
-        await MainActor.run {
+        Task { @MainActor in
+            defer { completionHandler() }
             switch actionId {
             case Self.replyActionId:
                 let text = (replyText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -318,16 +362,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+                                            willPresent notification: UNNotification,
+                                            withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void) {
         // Remote pushes (room_id) and local ones (roomId) both carry the room.
         let info = notification.request.content.userInfo
         let roomId = (info["room_id"] as? String) ?? (info["roomId"] as? String)
-        let (suppressed, playSound) = await MainActor.run {
-            (roomId != nil && roomId == self.focusedRoomId,
-             Preferences.shared.notificationSound)
+        Task { @MainActor in
+            // Don't banner a message for the room already on screen.
+            if roomId != nil && roomId == focusedRoomId {
+                completionHandler([])
+                return
+            }
+            completionHandler(Preferences.shared.notificationSound
+                              ? [.banner, .sound, .list] : [.banner, .list])
         }
-        // Don't banner a message for the room already on screen.
-        if suppressed { return [] }
-        return playSound ? [.banner, .sound, .list] : [.banner, .list]
     }
 }

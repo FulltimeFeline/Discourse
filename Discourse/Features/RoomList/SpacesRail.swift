@@ -158,6 +158,15 @@ struct SpacesRail: View {
         } label: {
             RoomAvatarView(name: scope.ownDisplayName ?? localpart(of: scope.userId),
                            isDirect: true, size: 40, avatarURL: scope.ownAvatarURL)
+                // Dot when another signed-in account has unread activity.
+                .overlay(alignment: .topTrailing) {
+                    if appState.otherAccountsHaveUnread {
+                        Circle().fill(.red)
+                            .frame(width: 11, height: 11)
+                            .overlay(Circle().strokeBorder(.background, lineWidth: 2))
+                            .offset(x: 2, y: -2)
+                    }
+                }
         }
         .buttonStyle(.plain)
         .menuIndicator(.hidden)

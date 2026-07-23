@@ -70,10 +70,6 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 .serverNameOrHomeserverUrl(serverNameOrUrl: token.session.homeserverUrl)
                 .sqliteStore(config: SqliteStoreBuilder(dataPath: dirs.dataPath, cachePath: dirs.cachePath)
                     .passphrase(passphrase: token.storePassphrase))
-                // Cross-process lock so the shared crypto store coordinates with
-                // the main app (which uses holder "mainapp"). Without matching
-                // config the store's lock state corrupts and the app crashes.
-                .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: "nse"))
                 .slidingSyncVersionBuilder(versionBuilder: token.session.slidingSyncVersion == "native" ? .native : .none)
                 .build()
             try await client.restoreSession(session: token.session.ffiSession)
@@ -83,7 +79,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 nseLog.error("getNotification returned no event")
                 return
             }
-            apply(item, roomId: roomId)
+            // Label which account this is for (full @user:server), but only when
+            // more than one is signed in on this device.
+            let accountLabel = tokens.count > 1 ? token.session.userId : nil
+            apply(item, roomId: roomId, accountLabel: accountLabel)
             await attachAvatar(client: client, item: item, roomId: roomId)
             nseLog.info("decrypted + enriched notification")
         } catch {
@@ -97,8 +96,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private func attachAvatar(client: Client, item: NotificationItem, roomId: String) async {
         guard let content = bestAttempt else { return }
         let isGroup = item.roomInfo.joinedMembersCount > 2
+        // Prefer the app-provided avatar (resolves the DM/room/space rule and is
+        // reliable); fall back to the push item's own fields.
         let mxc: String?
-        if !isGroup {
+        if let appProvided = SpaceNameStore.roomAvatar(forRoom: roomId) {
+            mxc = appProvided
+        } else if !isGroup {
             // 1:1 — the other party is the sender.
             mxc = item.senderInfo.avatarUrl ?? item.roomInfo.avatarUrl
         } else if let spaceAvatar = SpaceNameStore.spaceAvatar(forRoom: roomId) {
@@ -106,17 +109,35 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         } else {
             mxc = item.roomInfo.avatarUrl
         }
-        guard let mxc, let source = try? MediaSource.fromUrl(url: mxc),
-              let data = try? await client.getMediaThumbnail(mediaSource: source, width: 128, height: 128),
-              let png = Self.encodePNG(data) else { return }
-
+        guard let mxc, let source = try? MediaSource.fromUrl(url: mxc) else {
+            nseLog.info("no avatar mxc for room")
+            return
+        }
+        // Thumbnail first; fall back to full content (authenticated-media servers
+        // can 404 the thumbnail path for some sources).
+        let data: Data?
+        if let thumb = try? await client.getMediaThumbnail(mediaSource: source, width: 128, height: 128) {
+            data = thumb
+        } else {
+            data = try? await client.getMediaContent(mediaSource: source)
+        }
+        guard let data, let png = Self.encodePNG(data) else {
+            nseLog.error("avatar fetch/encode failed for \(mxc, privacy: .public)")
+            return
+        }
         let name = roomId.replacingOccurrences(of: "/", with: "_")
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("push-avatar-\(name).png")
         guard (try? png.write(to: url)) != nil,
-              let attachment = try? UNNotificationAttachment(identifier: "", url: url, options: nil)
-        else { return }
+              let attachment = try? UNNotificationAttachment(
+                identifier: "avatar", url: url,
+                options: [UNNotificationAttachmentOptionsTypeHintKey: UTType.png.identifier])
+        else {
+            nseLog.error("avatar attachment build failed")
+            return
+        }
         content.attachments = [attachment]
+        nseLog.info("attached avatar")
     }
 
     /// Re-encodes downloaded avatar bytes to PNG so the attachment's type is
@@ -137,7 +158,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         return out as Data
     }
 
-    private func apply(_ item: NotificationItem, roomId: String) {
+    private func apply(_ item: NotificationItem, roomId: String, accountLabel: String?) {
         guard let content = bestAttempt else { return }
         let sender = item.senderInfo.displayName ?? ""
         let room = item.roomInfo.displayName
@@ -150,6 +171,16 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             content.subtitle = sender.isEmpty ? "" : sender
         } else {
             content.title = sender.isEmpty ? room : sender
+        }
+        // Which account this notification is for (multi-account only), in the
+        // format `SenderName (@account:server)`. The sender is in the subtitle
+        // for rooms and in the title for DMs.
+        if let accountLabel {
+            if !content.subtitle.isEmpty {
+                content.subtitle += " (\(accountLabel))"
+            } else {
+                content.title += " (\(accountLabel))"
+            }
         }
         if let body = messageBody(from: item.rawEvent) {
             content.body = body

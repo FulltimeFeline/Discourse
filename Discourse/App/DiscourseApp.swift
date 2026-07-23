@@ -407,6 +407,14 @@ struct MainWindow: View {
             phoneTabItem(.settings, title: "Settings") {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 22, weight: .medium))
+                    // Dot when another (non-active) account has unread activity.
+                    .overlay(alignment: .topTrailing) {
+                        if appState.otherAccountsHaveUnread {
+                            Circle().fill(.red)
+                                .frame(width: 8, height: 8)
+                                .offset(x: 7, y: -1)
+                        }
+                    }
             }
         }
         .padding(4)
@@ -757,6 +765,11 @@ struct MainWindow: View {
             NotificationManager.shared.loadAvatar = { mxcUrl, accountUserId in
                 await appState.notificationAvatarData(mxcUrl: mxcUrl, accountUserId: accountUserId)
             }
+            // Only label the account when more than one is signed in; show the
+            // full user id (@user:server) so it's unambiguous.
+            NotificationManager.shared.accountLabel = { accountUserId in
+                appState.accountTokens.count > 1 ? accountUserId : nil
+            }
             NotificationManager.shared.openRoom = { roomId, eventId, accountUserId in
                 Task {
                     // A background account's room isn't in this scope; switch
@@ -765,14 +778,13 @@ struct MainWindow: View {
                     if let accountUserId, accountUserId != appState.activeUserId {
                         await appState.switchAccount(to: accountUserId)
                     }
-                    // With an event id, jump straight to the message; otherwise
-                    // just open the room.
-                    if let eventId {
-                        appState.pendingEventNavigation =
-                            AppState.EventNavigation(roomId: roomId, eventId: eventId)
-                    } else {
-                        appState.pendingRoomNavigation = roomId
-                    }
+                    // Just open the room. A notification's event is the newest
+                    // message, already at the bottom once the room opens — the
+                    // event-jump only paginates backwards, so it never "finds"
+                    // the newest event and wrongly flashed "Couldn't find that
+                    // message". (Cross-room jump-to-event stays for search.)
+                    _ = eventId
+                    appState.pendingRoomNavigation = roomId
                 }
             }
             NotificationManager.shared.sendReply = { roomId, text, accountUserId in

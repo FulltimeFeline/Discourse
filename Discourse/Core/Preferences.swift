@@ -124,6 +124,22 @@ final class Preferences {
     var notificationPreview: NotificationPreview { didSet { defaults.setEnum(notificationPreview, "pref.notificationPreview") } }
     var notificationSound: Bool { didSet { defaults.set(notificationSound, forKey: "pref.notificationSound") } }
 
+    /// User IDs with notifications turned off. Stored as the complement (a
+    /// disabled set) so a freshly added account defaults to enabled.
+    private(set) var notificationDisabledUserIds: Set<String> = {
+        Set(UserDefaults.standard.stringArray(forKey: "pref.notificationDisabledUserIds") ?? [])
+    }()
+
+    func notificationsEnabled(forUserId userId: String) -> Bool {
+        !notificationDisabledUserIds.contains(userId)
+    }
+
+    func setNotificationsEnabled(_ enabled: Bool, forUserId userId: String) {
+        if enabled { notificationDisabledUserIds.remove(userId) }
+        else { notificationDisabledUserIds.insert(userId) }
+        defaults.set(Array(notificationDisabledUserIds), forKey: "pref.notificationDisabledUserIds")
+    }
+
     // MARK: Accessibility
     var alwaysShowTimestamps: Bool { didSet { defaults.set(alwaysShowTimestamps, forKey: "pref.alwaysShowTimestamps") } }
     var reduceTimelineMotion: Bool { didSet { defaults.set(reduceTimelineMotion, forKey: "pref.reduceTimelineMotion") } }

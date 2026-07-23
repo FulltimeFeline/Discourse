@@ -90,6 +90,9 @@ final class AppState {
         }
         let target = sessionStore.activeUserId ?? accountTokens[0].session.userId
         await activate(userId: target)
+        // Bring up the other accounts in the background so they, too, notify and
+        // feed unread badges. Detached so it never delays the active account's UI.
+        Task { await warmBackgroundAccounts() }
     }
 
     func switchAccount(to userId: String) async {
@@ -110,6 +113,63 @@ final class AppState {
         }
         if case .active(let scope) = phase { return scope }
         return nil
+    }
+
+    // MARK: Multi-account notifications & badges
+
+    /// Restore + keep warm every other signed-in account, so background accounts
+    /// sync (firing notifications on macOS and driving cross-account unread
+    /// badges) and — on iOS — register a pusher for remote notifications. Local
+    /// notification *display* and pusher registration each respect the account's
+    /// per-account toggle; warming itself is unconditional so badges still work.
+    func warmBackgroundAccounts() async {
+        for token in accountTokens {
+            let userId = token.session.userId
+            guard userId != activeUserId, scopes[userId] == nil else { continue }
+            guard let service = try? await MatrixService.restore(token: token) else { continue }
+            let scope = SessionScope(service: service, token: token)
+            scopes[userId] = scope
+            registerBadgeReporting(for: scope)
+            await scope.roomList.primeSnapshotForLaunch()
+            Task { await scope.roomList.start() }
+            #if os(iOS)
+            PushRegistry.shared.registerPusher(for: service)
+            #endif
+        }
+    }
+
+    /// Live unread total for an account (0 if it isn't warm).
+    func unreadCount(forUserId userId: String) -> Int {
+        scopes[userId]?.roomList.unreadTotal ?? 0
+    }
+
+    /// Whether any signed-in account other than the active one has unread
+    /// activity — drives the account-switcher / settings badge.
+    var otherAccountsHaveUnread: Bool {
+        scopes.contains { $0.key != activeUserId && $0.value.roomList.unreadTotal > 0 }
+    }
+
+    /// Display name (falling back to the localpart) for an account, for
+    /// notification labels and the account list.
+    func accountDisplayName(forUserId userId: String) -> String {
+        if let name = scopes[userId]?.ownDisplayName, !name.isEmpty { return name }
+        return Self.localpart(of: userId)
+    }
+
+    static func localpart(of userId: String) -> String {
+        guard userId.hasPrefix("@") else { return userId }
+        return String(userId.dropFirst().prefix(while: { $0 != ":" }))
+    }
+
+    /// Toggles an account's notifications: persists the choice and, on iOS,
+    /// registers or deletes that account's pusher accordingly.
+    func setNotificationsEnabled(_ enabled: Bool, forUserId userId: String) {
+        Preferences.shared.setNotificationsEnabled(enabled, forUserId: userId)
+        #if os(iOS)
+        if let scope = scopes[userId] {
+            PushRegistry.shared.registerPusher(for: scope.service)
+        }
+        #endif
     }
 
     /// PNG bytes for an avatar (mxc), fetched via the owning account's media
@@ -254,6 +314,12 @@ final class AppState {
         guard let token = accountTokens.first(where: { $0.session.userId == userId }) else {
             phase = accountTokens.isEmpty ? .loggedOut : phase
             return
+        }
+        // Clear the outgoing account's "room on screen" marker. Otherwise its warm
+        // background sync keeps treating that room as active and auto-clears its
+        // unread on every message — rooms going read without being opened.
+        if case .active(let current) = phase, current.userId != userId {
+            current.roomList.activeRoomId = nil
         }
         if let warm = scopes[userId] {
             reconnectTask?.cancel()

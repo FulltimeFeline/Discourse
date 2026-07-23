@@ -816,16 +816,21 @@ final class RoomListViewModel {
         #if os(iOS)
         persistSpaceNamesForPush()
         #endif
+        // Respect this account's per-account notification toggle. (Calls still
+        // ring in-app; only banners are gated.)
+        let notify = Preferences.shared.notificationsEnabled(forUserId: service.userId)
         for summary in changed {
             let avatarURL = notificationAvatarURL(for: summary)
-            NotificationManager.shared.maybeNotify(room: summary,
-                                                   spaceName: spaceName(ofRoom: summary.id),
-                                                   avatarURL: avatarURL,
-                                                   accountUserId: service.userId)
+            if notify {
+                NotificationManager.shared.maybeNotify(room: summary,
+                                                       spaceName: spaceName(ofRoom: summary.id),
+                                                       avatarURL: avatarURL,
+                                                       accountUserId: service.userId)
+                NotificationManager.shared.maybeNotifyInvite(room: summary, avatarURL: avatarURL,
+                                                             accountUserId: service.userId)
+            }
             NotificationManager.shared.maybeNotifyCall(room: summary, avatarURL: avatarURL,
                                                        accountUserId: service.userId)
-            NotificationManager.shared.maybeNotifyInvite(room: summary, avatarURL: avatarURL,
-                                                         accountUserId: service.userId)
         }
     }
 
@@ -866,6 +871,15 @@ final class RoomListViewModel {
         }
         SpaceNameStore.save(names)
         SpaceNameStore.saveAvatars(avatars)
+
+        // The exact avatar each room's push should show (DM → other person,
+        // room-in-space → space, else the room). The NSE reads this rather than
+        // the push item's own (often-empty) avatar fields.
+        var roomAvatars: [String: String] = [:]
+        for room in rooms {
+            if let mxc = notificationAvatarURL(for: room) { roomAvatars[room.id] = mxc }
+        }
+        SpaceNameStore.saveRoomAvatars(roomAvatars)
     }
     #endif
 
