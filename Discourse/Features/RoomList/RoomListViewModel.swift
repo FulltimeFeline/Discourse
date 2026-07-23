@@ -611,18 +611,21 @@ final class RoomListViewModel {
             case .pushBack(let value):
                 add(value, at: rooms.count)
             case .popFront:
-                guard !rooms.isEmpty else { break }
+                guard !rooms.isEmpty, !ffiRooms.isEmpty else { break }
                 ffiRooms.removeFirst()
                 rooms.removeFirst()
             case .popBack:
-                guard !rooms.isEmpty else { break }
+                guard !rooms.isEmpty, !ffiRooms.isEmpty else { break }
                 ffiRooms.removeLast()
                 rooms.removeLast()
             case .insert(let index, let value):
                 add(value, at: Int(index))
             case .set(let index, let value):
                 let i = Int(index)
-                guard rooms.indices.contains(i) else { break }
+                // Both arrays are checked: a restored snapshot fills `rooms` but
+                // not `ffiRooms`, so during that window they can differ in length
+                // and an ffiRooms[i] on a rooms-valid index would crash.
+                guard rooms.indices.contains(i), ffiRooms.indices.contains(i) else { break }
                 ffiRooms[i] = value
                 // Same room: keep the populated summary. Resetting to basics blanks
                 // unreads/preview for a beat, flickering and re-sorting the row.
@@ -632,12 +635,12 @@ final class RoomListViewModel {
                 refreshDetails(of: value)
             case .remove(let index):
                 let i = Int(index)
-                guard rooms.indices.contains(i) else { break }
+                guard rooms.indices.contains(i), ffiRooms.indices.contains(i) else { break }
                 ffiRooms.remove(at: i)
                 rooms.remove(at: i)
             case .truncate(let length):
                 let l = Int(length)
-                guard rooms.count > l else { break }
+                guard rooms.count > l, ffiRooms.count >= l else { break }
                 ffiRooms.removeSubrange(l...)
                 rooms.removeSubrange(l...)
             case .reset(let values):
@@ -724,7 +727,9 @@ final class RoomListViewModel {
 
     private func add(_ room: Room, at index: Int) {
         let i = min(max(index, 0), rooms.count)
-        ffiRooms.insert(room, at: i)
+        // Clamp each array to its own count: a restored snapshot leaves `ffiRooms`
+        // shorter than `rooms`, and inserting past ffiRooms.count would crash.
+        ffiRooms.insert(room, at: min(i, ffiRooms.count))
         rooms.insert(RoomSummary(basicsOf: room), at: i)
         refreshDetails(of: room)
     }
@@ -812,19 +817,36 @@ final class RoomListViewModel {
         persistSpaceNamesForPush()
         #endif
         for summary in changed {
+            let avatarURL = notificationAvatarURL(for: summary)
             NotificationManager.shared.maybeNotify(room: summary,
                                                    spaceName: spaceName(ofRoom: summary.id),
+                                                   avatarURL: avatarURL,
                                                    accountUserId: service.userId)
-            NotificationManager.shared.maybeNotifyCall(room: summary, accountUserId: service.userId)
-            NotificationManager.shared.maybeNotifyInvite(room: summary, accountUserId: service.userId)
+            NotificationManager.shared.maybeNotifyCall(room: summary, avatarURL: avatarURL,
+                                                       accountUserId: service.userId)
+            NotificationManager.shared.maybeNotifyInvite(room: summary, avatarURL: avatarURL,
+                                                         accountUserId: service.userId)
         }
+    }
+
+    /// The first space containing this room, for notification titles/avatars.
+    func space(ofRoom roomId: String) -> SpaceItem? {
+        guard let spaceId = spaceChildIds.first(where: { $0.value.contains(roomId) })?.key
+        else { return nil }
+        return spaces.first { $0.id == spaceId }
     }
 
     /// The first space containing this room, for notification titles.
     func spaceName(ofRoom roomId: String) -> String? {
-        guard let spaceId = spaceChildIds.first(where: { $0.value.contains(roomId) })?.key
-        else { return nil }
-        return spaces.first { $0.id == spaceId }?.name
+        space(ofRoom: roomId)?.name
+    }
+
+    /// Avatar to show on a room's notification: a DM shows the other person, a
+    /// room inside a space shows the space, a plain room shows the room itself.
+    func notificationAvatarURL(for room: RoomSummary) -> String? {
+        if room.isDirect { return room.avatarURL }
+        if let spaceAvatar = space(ofRoom: room.id)?.avatarURL { return spaceAvatar }
+        return room.avatarURL
     }
 
     #if os(iOS)
@@ -833,12 +855,17 @@ final class RoomListViewModel {
     /// hierarchy cheaply itself). No-op unless remote push is on.
     private func persistSpaceNamesForPush() {
         guard PushConfig.enabled else { return }
-        var map: [String: String] = [:]
+        var names: [String: String] = [:]
+        var avatars: [String: String] = [:]
         for (spaceId, childIds) in spaceChildIds {
-            guard let name = spaces.first(where: { $0.id == spaceId })?.name else { continue }
-            for roomId in childIds where map[roomId] == nil { map[roomId] = name }
+            guard let space = spaces.first(where: { $0.id == spaceId }) else { continue }
+            for roomId in childIds where names[roomId] == nil {
+                names[roomId] = space.name
+                if let avatar = space.avatarURL { avatars[roomId] = avatar }
+            }
         }
-        SpaceNameStore.save(map)
+        SpaceNameStore.save(names)
+        SpaceNameStore.saveAvatars(avatars)
     }
     #endif
 

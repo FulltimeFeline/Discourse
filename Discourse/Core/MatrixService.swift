@@ -883,6 +883,11 @@ final class MatrixService: @unchecked Sendable {
             .serverNameOrHomeserverUrl(serverNameOrUrl: homeserver)
             .sqliteStore(config: SqliteStoreBuilder(dataPath: dataPath, cachePath: cachePath)
                 .passphrase(passphrase: passphrase))
+            // The notification service extension opens the same crypto store in
+            // multi-process mode; the main app must declare cross-process locking
+            // too, or the shared store's lock state corrupts and the app crashes
+            // when sync touches crypto (e.g. after tapping a push).
+            .crossProcessLockConfig(crossProcessLockConfig: .multiProcess(holderName: "mainapp"))
             // Login discovers the version; restore already knows it (from the
             // stored session), so it skips the network round-trip — the cold
             // launch no longer waits on the homeserver before showing cached data.

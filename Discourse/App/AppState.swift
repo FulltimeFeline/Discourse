@@ -112,6 +112,24 @@ final class AppState {
         return nil
     }
 
+    /// PNG bytes for an avatar (mxc), fetched via the owning account's media
+    /// loader so a local notification can show the pfp. Uses a warm scope if
+    /// present, else the active one; never switches accounts.
+    func notificationAvatarData(mxcUrl: String, accountUserId: String?) async -> Data? {
+        let scope: SessionScope?
+        if let accountUserId, let warm = scopes[accountUserId] {
+            scope = warm
+        } else if case .active(let active) = phase {
+            scope = active
+        } else {
+            scope = nil
+        }
+        guard let scope,
+              let image = await scope.mediaLoader.avatar(mxcUrl: mxcUrl, pixelSize: 128)
+        else { return nil }
+        return image.pngRepresentation
+    }
+
     // MARK: App badge
 
     /// App badge is the unread sum over every warm account, not just whichever

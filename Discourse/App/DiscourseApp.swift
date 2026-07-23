@@ -754,7 +754,10 @@ struct MainWindow: View {
             #endif
             NotificationManager.shared.focusedRoomId = focusedAtLaunch
             scope.roomList.activeRoomId = focusedAtLaunch
-            NotificationManager.shared.openRoom = { roomId, accountUserId in
+            NotificationManager.shared.loadAvatar = { mxcUrl, accountUserId in
+                await appState.notificationAvatarData(mxcUrl: mxcUrl, accountUserId: accountUserId)
+            }
+            NotificationManager.shared.openRoom = { roomId, eventId, accountUserId in
                 Task {
                     // A background account's room isn't in this scope; switch
                     // first, then the fresh window's onChange (initial: true)
@@ -762,7 +765,14 @@ struct MainWindow: View {
                     if let accountUserId, accountUserId != appState.activeUserId {
                         await appState.switchAccount(to: accountUserId)
                     }
-                    appState.pendingRoomNavigation = roomId
+                    // With an event id, jump straight to the message; otherwise
+                    // just open the room.
+                    if let eventId {
+                        appState.pendingEventNavigation =
+                            AppState.EventNavigation(roomId: roomId, eventId: eventId)
+                    } else {
+                        appState.pendingRoomNavigation = roomId
+                    }
                 }
             }
             NotificationManager.shared.sendReply = { roomId, text, accountUserId in

@@ -85,6 +85,16 @@ extension PlatformImage {
         cgImage
         #endif
     }
+
+    /// PNG encoding, for notification attachments and other file-based sinks.
+    var pngRepresentation: Data? {
+        #if os(macOS)
+        guard let tiff = tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+        #else
+        return pngData()
+        #endif
+    }
 }
 
 extension Image {
