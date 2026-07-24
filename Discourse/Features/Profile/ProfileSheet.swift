@@ -111,6 +111,7 @@ private struct MutualRoomsList: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
             }
             .padding(12)
@@ -144,13 +145,14 @@ private struct MutualRoomsList: View {
 struct ProfileSheet: View {
     let target: ProfileTarget
     let ownUserId: String
-    /// Starts (or opens) a DM and navigates to it.
-    let message: (String) async -> Void
+    /// Starts (or opens) a DM and navigates to it; false when creation failed.
+    let message: (String) async -> Bool
     @Environment(\.dismiss) private var dismiss
     @Environment(\.presenceService) private var presence
     @Environment(\.pronounsStore) private var pronounsStore
     @Environment(AppState.self) private var appState
     @State private var isMessaging = false
+    @State private var messageError: String?
     @State private var mutualSpaces: [MutualRef] = []
     @State private var mutualRooms: [MutualRef] = []
     @State private var mutualList: MutualList?
@@ -198,6 +200,11 @@ struct ProfileSheet: View {
                             HStack(spacing: 10) { actionButtons }
                             VStack(spacing: 10) { actionButtons }
                         }
+                        if let messageError {
+                            Text(messageError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
                     .padding(.horizontal, 20)
                 }
@@ -225,6 +232,7 @@ struct ProfileSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
                 .padding(10)
             }
@@ -280,6 +288,11 @@ struct ProfileSheet: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) { actionButtons }
                 VStack(spacing: 10) { actionButtons }
+            }
+            if let messageError {
+                Text(messageError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
     }
@@ -432,9 +445,15 @@ struct ProfileSheet: View {
             Button {
                 guard !isMessaging else { return }
                 isMessaging = true
+                messageError = nil
                 Task {
-                    await message(target.userId)
-                    dismiss()
+                    let ok = await message(target.userId)
+                    if ok {
+                        dismiss()
+                    } else {
+                        isMessaging = false
+                        messageError = String(localized: "Couldn't start the conversation.")
+                    }
                 }
             } label: {
                 Label("Message", systemImage: "square.and.pencil")

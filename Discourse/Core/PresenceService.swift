@@ -220,8 +220,10 @@ struct PresenceDot: View {
                     .overlay(Circle().strokeBorder(.background, lineWidth: size * 0.18))
                     .help(state.label)
                     .accessibilityLabel(state.label)
+                    .transition(.scale.combined(with: .opacity))
             }
         }
+        .animation(.easeOut(duration: 0.2), value: presence?.state(of: userId))
         .task(id: userId) {
             guard let presence else { return }
             presence.register(userId)

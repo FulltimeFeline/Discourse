@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// account switcher pinned at the bottom.
 struct SpacesRail: View {
     @Environment(AppState.self) private var appState
+    @Environment(Preferences.self) private var prefs
     let viewModel: RoomListViewModel
     let scope: SessionScope
 
@@ -119,7 +120,7 @@ struct SpacesRail: View {
                     ZStack {
                         Circle().fill(.quaternary.opacity(0.6))
                         Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.system(size: 17, weight: .medium))
                             .foregroundStyle(.tint)
                     }
                     .frame(width: avatarSize, height: avatarSize)
@@ -162,8 +163,9 @@ struct SpacesRail: View {
                 .overlay(alignment: .topTrailing) {
                     if appState.otherAccountsHaveUnread {
                         Circle().fill(.red)
-                            .frame(width: 11, height: 11)
-                            .overlay(Circle().strokeBorder(.background, lineWidth: 2))
+                            .frame(width: 13, height: 13)
+                            .overlay(Circle().strokeBorder(Color.platformWindowBackground,
+                                                           lineWidth: 2.5))
                             .offset(x: 2, y: -2)
                     }
                 }
@@ -204,7 +206,8 @@ struct SpacesRail: View {
                             .accessibilityHidden(true)
                     }
                 }
-                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: hasMention)
+                .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
+                           value: hasMention)
                 // iPad pointer highlight; defined in SidebarView.swift.
                 .pointerHighlight()
         }
@@ -232,7 +235,8 @@ struct SpacesRail: View {
                 }
             }
             .transition(.move(edge: .leading).combined(with: .opacity))
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: pillHeight)
+            .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
+                       value: pillHeight)
         }
         .help(help)
         // .help is hover-only; VoiceOver and iOS need the name spoken too.

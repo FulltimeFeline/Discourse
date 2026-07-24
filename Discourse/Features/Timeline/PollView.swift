@@ -35,6 +35,7 @@ struct PollView: View {
                             Text(String(answer.voteCount))
                                 .font(.callout.weight(.medium))
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -53,6 +54,11 @@ struct PollView: View {
                     }
                     .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    #if os(iOS)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, -4)
+                    #endif
                 }
                 .buttonStyle(.plain)
                 .disabled(poll.isEnded)
@@ -93,6 +99,7 @@ struct PollView: View {
         // 0.35, not 0.5: option chips (0.5) stack on this, and 0.5 here would
         // double-darken every nested row.
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .animation(.easeOut(duration: 0.3), value: poll)
     }
 }
 
@@ -206,6 +213,7 @@ struct NewPollSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(Text("Remove Option \(index + 1)"))
                     }
                 }
             }

@@ -333,7 +333,7 @@ struct ComposerView: View {
         var prefix: [EmojiSuggestion] = []
         var contains: [EmojiSuggestion] = []
         if let store = scope?.customEmoji {
-            for emote in store.byShortcode.values.sorted(by: { $0.shortcode < $1.shortcode }) {
+            for emote in store.sortedEmoticons {
                 let shortcode = emote.shortcode.lowercased()
                 if shortcode.hasPrefix(needle) {
                     prefix.append(.custom(emote))
@@ -493,16 +493,17 @@ struct ComposerView: View {
             }
             .padding(.leading, 2)
             .padding(.bottom, 4)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8),
+            .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
                        value: viewModel.typingUsers.isEmpty)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8),
+            .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
                        value: viewModel.composerError == nil)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8),
+            .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
                        value: viewModel.editTarget?.id)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8),
+            .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
                        value: viewModel.replyTarget?.id)
             if viewModel.hasPendingAttachments {
                 attachmentStrip
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             Group {
             #if os(iOS)
@@ -519,6 +520,7 @@ struct ComposerView: View {
                 .menuIndicator(.hidden)
                 .buttonStyle(.plain)
                 .help("Attach, sticker, or poll")
+                .accessibilityLabel("Attach")
                 // Single-line-field height so the icon centers on the text row.
                 .frame(height: 33)
                 .padding(.leading, 8)
@@ -540,6 +542,7 @@ struct ComposerView: View {
                     }
                     .buttonStyle(.plain)
                     .help("Emoji & Stickers")
+                    .accessibilityLabel("Emoji and stickers")
                     .frame(height: 33)
                     .popover(isPresented: $showsEmojiPicker, arrowEdge: .top) {
                         expressionPicker
@@ -555,6 +558,7 @@ struct ComposerView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel recording")
                     .frame(height: 33)
                     Button {
                         if let recording = recorder.stop() {
@@ -566,6 +570,7 @@ struct ComposerView: View {
                             .foregroundStyle(.tint)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Send voice message")
                     .frame(height: 33)
                     .padding(.trailing, 8)
                 } else if canSend {
@@ -575,6 +580,7 @@ struct ComposerView: View {
                             .foregroundStyle(.tint)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Send")
                     .frame(height: 33)
                     .padding(.trailing, 8)
                 } else {
@@ -649,6 +655,8 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.top, 4)
+        .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
+                   value: viewModel.hasPendingAttachments)
         #if os(macOS)
         .padding(.bottom, 8)
         #else
@@ -737,6 +745,14 @@ struct ComposerView: View {
         // Light tick on send; suppressed when the pref is off (hapticTick
         // only advances while it's on).
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)
+        // Blind threshold crossings during a voice hold: the lock latch and
+        // the slide-to-cancel discard each tick once on the false→true edge.
+        .sensoryFeedback(.impact(weight: .medium), trigger: isVoiceLocked) { _, locked in
+            locked
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: voiceDragCancelled) { _, cancelled in
+            cancelled
+        }
         // Focus moving to the field while the panel rides above the keyboard
         // (panel search): the keyboard stays up so no will-show fires — retire
         // the panel here. Only in that state; the ordinary swap stays a single
@@ -859,6 +875,7 @@ struct ComposerView: View {
             }
             .buttonStyle(.plain)
             .help("Cancel editing")
+            .accessibilityLabel("Cancel editing")
         }
         .font(.callout)
         .appendixBubble()
@@ -1083,6 +1100,7 @@ struct ComposerView: View {
                                              ? AnyShapeStyle(.red)
                                              : AnyShapeStyle(.secondary))
                     }
+                    .accessibilityLabel("Delete recording")
                 } else {
                     Menu {
                         attachMenuItems
@@ -1092,6 +1110,7 @@ struct ComposerView: View {
                             .foregroundStyle(.secondary)
                     }
                     .menuIndicator(.hidden)
+                    .accessibilityLabel("Attach")
                 }
             }
             .buttonStyle(PressFeedbackStyle())
@@ -1149,6 +1168,7 @@ struct ComposerView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(PressFeedbackStyle())
+                .accessibilityLabel(showsExpressionPanel ? "Show keyboard" : "Emoji and stickers")
                 .frame(width: 40, height: 40)
                 .glassEffect()
                 // 44pt hit target around the 40pt visual.
@@ -1174,6 +1194,7 @@ struct ComposerView: View {
                             .foregroundStyle(.tint)
                     }
                     .buttonStyle(PressFeedbackStyle())
+                    .accessibilityLabel("Send")
                 } else {
                     // Hold to record; slide left to discard, up to lock. Not a
                     // Button: the zero-distance drag needs the raw press.
@@ -1428,6 +1449,7 @@ struct ComposerView: View {
                         .buttonStyle(.plain)
                         .padding(3)
                         .help("Remove attachment")
+                        .accessibilityLabel(Text("Remove \(attachment.filename)"))
                     }
                 }
             }
@@ -1500,6 +1522,7 @@ struct ComposerView: View {
                     #endif
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Cancel reply")
         }
         .font(.callout)
         .appendixBubble()

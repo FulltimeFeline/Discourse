@@ -134,6 +134,7 @@ struct MessageRow: View {
                             Text(reply.senderName)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.primary)
+                                .lineLimit(1)
                         }
                         Text(RenderedBodyCache.rendered(reply.snippet))
                             .font(.caption)
@@ -358,6 +359,11 @@ struct MessageRow: View {
         // horizontal leftward drags. Leftward on purpose: the phone pager owns
         // rightward drags for closing the chat layer.
         .simultaneousGesture(replySwipeGesture)
+        // Marks the reply threshold latching mid-drag; fires only on the
+        // false→true edge, not on release/reset.
+        .sensoryFeedback(.impact(weight: .medium), trigger: replyDragTriggered) { _, isTriggered in
+            isTriggered
+        }
         // onEnded doesn't fire on system cancellation (scroll takeover, context
         // menu); reset so a later drag's onEnded doesn't consume stale state.
         .onDisappear {
@@ -470,6 +476,10 @@ struct MessageRow: View {
                                avatarURL: effectiveAvatarURL)
                     .contentShape(Circle())
                     .onTapGesture { openProfile(profileTarget) }
+                    #if os(macOS)
+                    .pointerStyle(.link)
+                    #endif
+                    .help("View profile")
                     .accessibilityElement()
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel(Text("View profile of \(effectiveName)"))
@@ -502,7 +512,13 @@ struct MessageRow: View {
                 Text(effectiveName)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(senderColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .onTapGesture { openProfile(profileTarget) }
+                    #if os(macOS)
+                    .pointerStyle(.link)
+                    #endif
+                    .help("View profile")
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction { openProfile(profileTarget) }
             }
@@ -533,7 +549,7 @@ struct MessageRow: View {
         switch message.kind {
         case .text(let body):
             let emotes = effectiveEmotes(in: body)
-            if body.split(separator: "\n", omittingEmptySubsequences: false).contains(where: { $0.hasPrefix(">") }) {
+            if body.hasPrefix(">") || body.contains("\n>") {
                 // Markdown blockquotes: `>`-prefixed lines render as a quote.
                 attributed(QuotedBodyView(rawBody: body, emotes: emotes, loader: viewModel.mediaLoader,
                                           jumboEmoji: prefs.jumboEmoji, fontScale: fontScale,
@@ -1140,7 +1156,7 @@ struct ReactionChips: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(
-                        mine ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.quaternary.opacity(0.6)),
+                        mine ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.quaternary.opacity(0.5)),
                         in: Capsule()
                     )
                     .overlay(Capsule().strokeBorder(mine ? Color.accentColor : .clear, lineWidth: 1))
@@ -1211,7 +1227,7 @@ struct ReactionChips: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                         .frame(height: 23)
-                        .background(.quaternary.opacity(0.6), in: Capsule())
+                        .background(.quaternary.opacity(0.5), in: Capsule())
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)

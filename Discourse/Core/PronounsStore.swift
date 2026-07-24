@@ -11,7 +11,7 @@ final class PronounsStore {
     /// userId → fetched profile (a stored entry means "fetched", so we don't
     /// keep re-requesting even when fields are empty).
     private var cache: [String: MatrixService.ProfileInfo] = [:]
-    private var inFlight: Set<String> = []
+    @ObservationIgnored private var inFlight: Set<String> = []
     /// Set by AppState after both are built: the status comes from presence
     /// `status_msg` (where Commet stores it), with the profile field as fallback.
     weak var presence: PresenceService?

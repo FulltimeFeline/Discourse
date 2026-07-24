@@ -49,6 +49,9 @@ final class CustomEmojiStore {
     }
     /// shortcode → emoticon, first-wins with the personal pack prioritised.
     private(set) var byShortcode: [String: Emote] = [:]
+    /// `byShortcode`'s values sorted by shortcode, maintained here so the
+    /// composer's autocomplete doesn't re-sort per keystroke.
+    private(set) var sortedEmoticons: [Emote] = []
     /// mxc URL → emote (any usage), for labelling image reactions.
     private(set) var byUrl: [String: Emote] = [:]
 
@@ -218,7 +221,10 @@ final class CustomEmojiStore {
             }
         }
         if packs != ordered { packs = ordered }
-        if byShortcode != shortcodes { byShortcode = shortcodes }
+        if byShortcode != shortcodes {
+            byShortcode = shortcodes
+            sortedEmoticons = shortcodes.values.sorted { $0.shortcode < $1.shortcode }
+        }
         if byUrl != urls { byUrl = urls }
     }
 

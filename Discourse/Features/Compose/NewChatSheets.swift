@@ -182,10 +182,12 @@ struct InviteSheet: View {
             Label("Invited", systemImage: "checkmark")
                 .font(.callout)
                 .foregroundStyle(.green)
+                .accessibilityLabel(Text("Invited \(userId)"))
         } else {
             Button("Invite") { invite(userId) }
                 .controlSize(.small)
                 .disabled(busy.contains(userId))
+                .accessibilityLabel(Text("Invite \(userId)"))
         }
     }
 

@@ -367,11 +367,18 @@ final class TimelineViewModel {
     /// levels. Fails closed if they can't be fetched.
     private func refreshPermissions() async {
         guard let levels = try? await room.getPowerLevels() else { return }
-        canInvite = levels.canOwnUserInvite()
-        canKick = levels.canOwnUserKick()
-        canBan = levels.canOwnUserBan()
-        canRedactOwn = levels.canOwnUserRedactOwn()
-        canRedactOther = levels.canOwnUserRedactOther()
+        // Assigned only on change — this runs per room-info tick, and
+        // @Observable fires on same-value writes.
+        let invite = levels.canOwnUserInvite()
+        let kick = levels.canOwnUserKick()
+        let ban = levels.canOwnUserBan()
+        let redactOwn = levels.canOwnUserRedactOwn()
+        let redactOther = levels.canOwnUserRedactOther()
+        if canInvite != invite { canInvite = invite }
+        if canKick != kick { canKick = kick }
+        if canBan != ban { canBan = ban }
+        if canRedactOwn != redactOwn { canRedactOwn = redactOwn }
+        if canRedactOther != redactOther { canRedactOther = redactOther }
     }
 
     /// Removes a member (kick). Returns an error message on failure.
@@ -520,14 +527,24 @@ final class TimelineViewModel {
                 retained.append(room.subscribeToRoomInfoUpdates(listener: infoBridge))
                 streamTask2 = Task { [weak self] in
                     for await info in infoBridge.stream {
-                        self?.hasActiveCall = info.hasRoomCall
-                        self?.isEncrypted = info.encryptionState == .encrypted
-                        self?.roomName = info.displayName ?? info.id
-                        self?.topic = info.topic
-                        self?.avatarURL = info.avatarUrl
-                        self?.memberCount = info.joinedMembersCount
+                        guard let self else { break }
+                        // Room-info updates arrive on essentially every sync
+                        // tick; @Observable fires on same-value writes, so
+                        // guard each assignment (see typingUsers above).
+                        if self.hasActiveCall != info.hasRoomCall {
+                            self.hasActiveCall = info.hasRoomCall
+                        }
+                        let encrypted = info.encryptionState == .encrypted
+                        if self.isEncrypted != encrypted { self.isEncrypted = encrypted }
+                        let name = info.displayName ?? info.id
+                        if self.roomName != name { self.roomName = name }
+                        if self.topic != info.topic { self.topic = info.topic }
+                        if self.avatarURL != info.avatarUrl { self.avatarURL = info.avatarUrl }
+                        if self.memberCount != info.joinedMembersCount {
+                            self.memberCount = info.joinedMembersCount
+                        }
                         // Power levels can change under us; re-gate actions.
-                        Task { await self?.refreshPermissions() }
+                        Task { [weak self] in await self?.refreshPermissions() }
                     }
                 }
                 if let info = try? await room.roomInfo() {
@@ -1027,32 +1044,58 @@ final class TimelineViewModel {
         Task { _ = try? await handle.abort() }
     }
 
+    /// Set when the member fetch fails (offline, federation error), so the
+    /// member list can show a retry instead of an eternal spinner.
+    private(set) var membersLoadFailed = false
+
     /// Loads the joined-member list (once per room visit).
     func loadMembers(force: Bool = false) async {
-        guard force || members.isEmpty, let iterator = try? await room.members() else { return }
-        var all: [MemberItem] = []
-        while let chunk = iterator.nextChunk(chunkSize: 500) {
-            all.append(contentsOf: chunk
-                .filter { $0.membership == .join && !$0.isServiceMember }
-                .map {
-                    let role: MemberItem.Role = switch $0.suggestedRoleForPowerLevel {
-                    case .creator: .creator
-                    case .administrator: .administrator
-                    case .moderator: .moderator
-                    case .user: .member
-                    }
-                    let level: Int = switch $0.powerLevel {
-                    case .infinite: Int.max
-                    case .value(let value): Int(value)
-                    }
-                    return MemberItem(id: $0.userId, displayName: $0.displayName,
-                                      avatarURL: $0.avatarUrl, role: role,
-                                      powerLevel: level)
-                })
+        guard force || members.isEmpty else { return }
+        membersLoadFailed = false
+        guard let iterator = try? await room.members() else {
+            membersLoadFailed = true
+            return
         }
-        members = all.sorted {
-            if $0.powerLevel != $1.powerLevel { return $0.powerLevel > $1.powerLevel }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        // Drain, map, and sort off-main: nextChunk is a synchronous FFI call
+        // and the localized sort is O(n log n) over potentially thousands of
+        // members. Plain Sendable tuples sidestep MemberItem's @MainActor
+        // isolation (it's nested in a @MainActor class).
+        let sorted = await Task.detached(priority: .userInitiated) {
+            () -> [(id: String, displayName: String?, avatarURL: String?,
+                    role: RoomMemberRole, powerLevel: Int)] in
+            var all: [(id: String, displayName: String?, avatarURL: String?,
+                       role: RoomMemberRole, powerLevel: Int)] = []
+            while let chunk = iterator.nextChunk(chunkSize: 500) {
+                all.append(contentsOf: chunk
+                    .filter { $0.membership == .join && !$0.isServiceMember }
+                    .map {
+                        let level: Int = switch $0.powerLevel {
+                        case .infinite: Int.max
+                        case .value(let value): Int(value)
+                        }
+                        return (id: $0.userId, displayName: $0.displayName,
+                                avatarURL: $0.avatarUrl,
+                                role: $0.suggestedRoleForPowerLevel,
+                                powerLevel: level)
+                    })
+            }
+            all.sort {
+                if $0.powerLevel != $1.powerLevel { return $0.powerLevel > $1.powerLevel }
+                return ($0.displayName ?? $0.id)
+                    .localizedCaseInsensitiveCompare($1.displayName ?? $1.id) == .orderedAscending
+            }
+            return all
+        }.value
+        members = sorted.map {
+            let role: MemberItem.Role = switch $0.role {
+            case .creator: .creator
+            case .administrator: .administrator
+            case .moderator: .moderator
+            case .user: .member
+            }
+            return MemberItem(id: $0.id, displayName: $0.displayName,
+                              avatarURL: $0.avatarURL, role: role,
+                              powerLevel: $0.powerLevel)
         }
         membersById = Dictionary(members.map { ($0.id, $0) }) { first, _ in first }
         await loadPowerLevelTags()
@@ -1309,13 +1352,18 @@ final class TimelineViewModel {
     /// which the SDK otherwise leaves a message behind. No-op until polled.
     private func applyExplicitReceipts() {
         guard !explicitReceipts.isEmpty else { return }
+        // Invert once per call — a per-entry dictionary filter was
+        // O(entries × receipts) on every diff batch.
+        var readersByEvent: [String: [String]] = [:]
+        for (userId, eventId) in explicitReceipts where userId != ownUserId {
+            readersByEvent[eventId, default: []].append(userId)
+        }
+        for key in readersByEvent.keys { readersByEvent[key]?.sort() }
         for i in entries.indices {
             guard case .message(var m) = entries[i], let eventId = m.eventId else { continue }
-            let readers = explicitReceipts
-                .filter { $0.value == eventId && $0.key != ownUserId }
-                .keys.sorted()
-            if m.readReceiptUserIds != Array(readers) {
-                m.readReceiptUserIds = Array(readers)
+            let readers = readersByEvent[eventId] ?? []
+            if m.readReceiptUserIds != readers {
+                m.readReceiptUserIds = readers
                 entries[i] = .message(m)
             }
         }
@@ -1360,11 +1408,37 @@ final class TimelineViewModel {
         }
     }
 
+    /// Pauses the per-room ephemeral long-poll (app backgrounded / window
+    /// closed); `resumeEphemeralSync` restarts it with a fresh snapshot.
+    func pauseEphemeralSync() {
+        ephemeralSyncTask?.cancel()
+        ephemeralSyncTask = nil
+    }
+
+    func resumeEphemeralSync() {
+        guard mode == .live, timeline != nil, !isParked, ephemeralSyncTask == nil else { return }
+        startEphemeralSync()
+    }
+
+    /// Whether the "NEW" divider row is currently on screen. Observable (unlike
+    /// `visibleEntryIds`) so the jump-to-unread pill re-evaluates as the marker
+    /// scrolls in and out of view.
+    private(set) var unreadMarkerOnScreen = false
+
+    func setUnreadMarkerOnScreen(_ onScreen: Bool) {
+        if unreadMarkerOnScreen != onScreen {
+            unreadMarkerOnScreen = onScreen
+        }
+    }
+
     /// Updates the read-marker and (re)arms the auto-dismissing pill. Only a
     /// marker we haven't already dismissed shows, and only for a few seconds.
     private func setUnreadMarker(_ marker: String?) {
         guard marker != firstUnreadMarkerId else { return }
         firstUnreadMarkerId = marker
+        // A different (or cleared) marker hasn't been seen on screen yet; its
+        // row's onAppear re-sets this if it's already visible.
+        setUnreadMarkerOnScreen(false)
         guard let marker else {
             unreadDismissTask?.cancel()
             unreadMarkerVisible = false

@@ -48,6 +48,7 @@ struct ThreadView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
             }
             .padding(12)
@@ -85,6 +86,7 @@ struct ThreadView: View {
                         }
                         ForEach(viewModel.entries) { entry in
                             TimelineEntryRow(entry: entry, viewModel: viewModel) { _ in }
+                                .equatable()
                                 .id(entry.id)
                         }
                     }

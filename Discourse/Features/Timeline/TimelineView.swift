@@ -75,11 +75,16 @@ struct TimelineView: View {
                     // A video room is a standing call; the join affordance is
                     // always present.
                     videoRoomBanner
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 } else if viewModel.hasActiveCall && !appState.activeCallRoomIds.contains(viewModel.roomId) {
                     callBanner
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 timelineBody
             }
+            .animation(.easeOut(duration: 0.25), value: viewModel.hasActiveCall)
+            .animation(.easeOut(duration: 0.25),
+                       value: appState.activeCallRoomIds.contains(viewModel.roomId))
             .frame(minWidth: 330)
             if showsDetails && detailsColumnFits {
                 Rectangle()
@@ -224,7 +229,9 @@ struct TimelineView: View {
             ProfileSheet(target: target, ownUserId: viewModel.ownUserId) { userId in
                 if let roomId = await viewModel.startDm(userId: userId) {
                     appState.pendingRoomNavigation = roomId
+                    return true
                 }
+                return false
             }
         }
         #if os(iOS)
@@ -438,9 +445,20 @@ struct TimelineView: View {
                                          jumpToEvent: { eventId in
                                              jump(to: eventId)
                                          })
+                        .equatable()
                         .id(entry.id)
-                        .onAppear { viewModel.visibleEntryIds.insert(entry.id) }
-                        .onDisappear { viewModel.visibleEntryIds.remove(entry.id) }
+                        .onAppear {
+                            viewModel.visibleEntryIds.insert(entry.id)
+                            if entry.id == viewModel.firstUnreadMarkerId {
+                                viewModel.setUnreadMarkerOnScreen(true)
+                            }
+                        }
+                        .onDisappear {
+                            viewModel.visibleEntryIds.remove(entry.id)
+                            if entry.id == viewModel.firstUnreadMarkerId {
+                                viewModel.setUnreadMarkerOnScreen(false)
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
@@ -703,28 +721,30 @@ private struct PhoneCallScreen: View {
         // MainWindow's incoming-call banner sits under this cover (audible but
         // invisible); mirror it here so a ring during a call is answerable.
         .overlay(alignment: .top) {
-            if let call = appState.ringingCall {
-                IncomingCallView(call: call) {
-                    appState.ringingCall = nil
-                    // Ring for the room we're already in: nothing to do.
-                    guard call.roomId != roomId else { return }
-                    // End the current call first: openChat drops foreign-room
-                    // navigation while a call is live, so live-call state must
-                    // clear before the navigation lands. (onDisappear repeats
-                    // this; both steps are idempotent.)
-                    appState.activeCallRoomIds.remove(roomId)
-                    if case .active(let scope) = appState.phase {
-                        scope.endCall(forRoomId: roomId)
+            ZStack {
+                if let call = appState.ringingCall {
+                    IncomingCallView(call: call) {
+                        appState.ringingCall = nil
+                        // Ring for the room we're already in: nothing to do.
+                        guard call.roomId != roomId else { return }
+                        // End the current call first: openChat drops foreign-room
+                        // navigation while a call is live, so live-call state must
+                        // clear before the navigation lands. (onDisappear repeats
+                        // this; both steps are idempotent.)
+                        appState.activeCallRoomIds.remove(roomId)
+                        if case .active(let scope) = appState.phase {
+                            scope.endCall(forRoomId: roomId)
+                        }
+                        dismiss()
+                        appState.pendingCallJoin = call.roomId
+                        appState.pendingRoomNavigation = call.roomId
+                    } decline: {
+                        appState.ringingCall = nil
                     }
-                    dismiss()
-                    appState.pendingCallJoin = call.roomId
-                    appState.pendingRoomNavigation = call.roomId
-                } decline: {
-                    appState.ringingCall = nil
                 }
             }
+            .animation(.spring(duration: 0.3), value: appState.ringingCall)
         }
-        .animation(.spring(duration: 0.3), value: appState.ringingCall)
     }
 }
 #endif
@@ -737,11 +757,12 @@ private struct JumpToUnreadOverlay: View {
     let action: () -> Void
 
     var body: some View {
-        ZStack {
-            if viewModel.unreadMarkerVisible,
-               let markerId = viewModel.firstUnreadMarkerId,
-               !viewModel.isAtBottom,
-               !viewModel.visibleEntryIds.contains(markerId) {
+        let visible = viewModel.unreadMarkerVisible
+            && viewModel.firstUnreadMarkerId != nil
+            && !viewModel.isAtBottom
+            && !viewModel.unreadMarkerOnScreen
+        return ZStack {
+            if visible {
                 Button(action: action) {
                     Label("Jump to unread", systemImage: "arrow.up")
                         .font(.caption.weight(.semibold))
@@ -758,8 +779,8 @@ private struct JumpToUnreadOverlay: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85),
-                   value: viewModel.unreadMarkerVisible)
+        .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85),
+                   value: visible)
     }
 }
 
@@ -798,7 +819,8 @@ private struct JumpToPresentOverlay: View {
                 .accessibilityLabel("Jump to latest")
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: viewModel.isAtBottom)
+        .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85),
+                   value: viewModel.isAtBottom)
     }
 }
 
@@ -833,6 +855,18 @@ struct TimelineEntryRow: View {
     }
 }
 
+/// Data-only equality (the closures always perform the same action), so
+/// `.equatable()` skips re-evaluating rows whose entry didn't change when the
+/// entries array mutates. Observation-tracked reads inside still invalidate
+/// affected rows directly.
+/// (`@preconcurrency`: SwiftUI always compares views on the main actor, so the
+/// isolated `==` is safe without requiring TimelineEntry to be Sendable.)
+extension TimelineEntryRow: @preconcurrency Equatable {
+    static func == (l: TimelineEntryRow, r: TimelineEntryRow) -> Bool {
+        l.entry == r.entry
+    }
+}
+
 /// Tabbed right column: room Info, Members, and a Media gallery.
 struct RoomDetailsColumn: View {
     enum Tab: String, CaseIterable, Identifiable {
@@ -851,6 +885,8 @@ struct RoomDetailsColumn: View {
     var jumpToEvent: (String) -> Void = { _ in }
     /// Remembered across rooms and launches.
     @AppStorage("detailsColumnTab") private var tab: Tab = .members
+    @Namespace private var pillNamespace
+    @State private var hoveredTab: Tab?
 
     #if os(macOS)
     @Environment(\.controlActiveState) private var controlActiveState
@@ -867,17 +903,25 @@ struct RoomDetailsColumn: View {
             HStack(spacing: 2) {
                 ForEach(Tab.allCases) { item in
                     Button {
-                        tab = item
+                        withAnimation(.snappy(duration: 0.28)) {
+                            tab = item
+                        }
                     } label: {
                         Text(item.title)
                             .font(.callout.weight(tab == item ? .semibold : .regular))
-                            .foregroundStyle(tab == item ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                            .foregroundStyle(tab == item
+                                             ? (isWindowInactive ? AnyShapeStyle(.primary) : AnyShapeStyle(.white))
+                                             : AnyShapeStyle(.secondary))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 4)
-                            .background(
-                                tab == item ? selectedFill : AnyShapeStyle(.clear),
-                                in: Capsule()
-                            )
+                            .background {
+                                if tab == item {
+                                    Capsule().fill(selectedFill)
+                                        .matchedGeometryEffect(id: "tab", in: pillNamespace)
+                                } else if hoveredTab == item {
+                                    Capsule().fill(.quaternary.opacity(0.5))
+                                }
+                            }
                             .contentShape(Capsule())
                             #if os(iOS)
                             // 44pt touch target, visible capsule unchanged.
@@ -887,6 +931,9 @@ struct RoomDetailsColumn: View {
                             #endif
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        hoveredTab = hovering ? item : (hoveredTab == item ? nil : hoveredTab)
+                    }
                     #if os(iOS)
                     .hoverEffect(.highlight)
                     #endif
@@ -1044,6 +1091,7 @@ private struct MediaGalleryView: View {
                                     .foregroundStyle(.tertiary)
                             }
                         }
+                        .frame(minHeight: 44)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -1190,24 +1238,23 @@ struct MemberListView: View {
             .map { (level: $0.key, members: $0.value) }
     }
 
-    private var filtered: [TimelineViewModel.MemberItem] {
-        Self.filteredMembers(viewModel.members, matching: query)
-    }
-
-    /// Members whose presence is confirmed offline; grouped into their own
-    /// bottom section so active members stay up top.
-    private var offlineMembers: [TimelineViewModel.MemberItem] {
-        filtered.filter { presence?.state(of: $0.id) == .offline }
-    }
-
-    /// Role groups of everyone not confirmed offline (online, idle, or not yet
-    /// fetched — the latter stay up top until proven offline).
-    private var groups: [(level: Int, members: [TimelineViewModel.MemberItem])] {
-        let offline = Set(offlineMembers.map(\.id))
-        return Self.memberGroups(of: filtered.filter { !offline.contains($0.id) })
-    }
-
     var body: some View {
+        // Computed once per evaluation: the old computed-property chain re-ran
+        // the member filter and presence scan several times per render.
+        let filtered = Self.filteredMembers(viewModel.members, matching: query)
+        // Members whose presence is confirmed offline; grouped into their own
+        // bottom section so active members stay up top.
+        let offlineMembers = filtered.filter { presence?.state(of: $0.id) == .offline }
+        let offlineIds = Set(offlineMembers.map(\.id))
+        // Role groups of everyone not confirmed offline (online, idle, or not
+        // yet fetched — the latter stay up top until proven offline).
+        let groups = Self.memberGroups(of: filtered.filter { !offlineIds.contains($0.id) })
+        return list(filtered: filtered, groups: groups, offlineMembers: offlineMembers)
+    }
+
+    private func list(filtered: [TimelineViewModel.MemberItem],
+                      groups: [(level: Int, members: [TimelineViewModel.MemberItem])],
+                      offlineMembers: [TimelineViewModel.MemberItem]) -> some View {
         List {
             // Headers as plain rows: List section headers draw a divider that
             // can't be turned off.
@@ -1283,7 +1330,15 @@ struct MemberListView: View {
                                     moderation: $moderation,
                                     moderationError: $moderationError))
         .overlay {
-            if viewModel.members.isEmpty {
+            if viewModel.membersLoadFailed && viewModel.members.isEmpty {
+                ContentUnavailableView {
+                    Label("Couldn't Load Members", systemImage: "person.2.slash")
+                } actions: {
+                    Button("Retry") {
+                        Task { await viewModel.loadMembers(force: true) }
+                    }
+                }
+            } else if viewModel.members.isEmpty {
                 ProgressView()
             } else if filtered.isEmpty {
                 ContentUnavailableView.search(text: query)
@@ -1293,7 +1348,9 @@ struct MemberListView: View {
             ProfileSheet(target: target, ownUserId: viewModel.ownUserId) { userId in
                 if let roomId = await viewModel.startDm(userId: userId) {
                     appState.pendingRoomNavigation = roomId
+                    return true
                 }
+                return false
             }
         }
         .task { await viewModel.loadMembers() }
@@ -1474,19 +1531,6 @@ private struct RoomDetailsSheet: View {
     @State private var moderation: MemberListView.ModerationAction?
     @State private var moderationError: String?
 
-    private var filtered: [TimelineViewModel.MemberItem] {
-        MemberListView.filteredMembers(viewModel.members, matching: query)
-    }
-
-    private var offlineMembers: [TimelineViewModel.MemberItem] {
-        filtered.filter { presence?.state(of: $0.id) == .offline }
-    }
-
-    private var groups: [(level: Int, members: [TimelineViewModel.MemberItem])] {
-        let offline = Set(offlineMembers.map(\.id))
-        return MemberListView.memberGroups(of: filtered.filter { !offline.contains($0.id) })
-    }
-
     var body: some View {
         NavigationStack {
             List {
@@ -1508,7 +1552,9 @@ private struct RoomDetailsSheet: View {
                 ProfileSheet(target: target, ownUserId: viewModel.ownUserId) { userId in
                     if let roomId = await viewModel.startDm(userId: userId) {
                         appState.pendingRoomNavigation = roomId
+                        return true
                     }
+                    return false
                 }
             }
             .sheet(isPresented: $showsInvite) {
@@ -1604,6 +1650,12 @@ private struct RoomDetailsSheet: View {
 
     @ViewBuilder
     private var membersSections: some View {
+        // Hoisted locals, mirroring MemberListView: one filter + presence scan
+        // per evaluation instead of one per computed-property read.
+        let filtered = MemberListView.filteredMembers(viewModel.members, matching: query)
+        let offlineMembers = filtered.filter { presence?.state(of: $0.id) == .offline }
+        let offlineIds = Set(offlineMembers.map(\.id))
+        let groups = MemberListView.memberGroups(of: filtered.filter { !offlineIds.contains($0.id) })
         if viewModel.members.isEmpty {
             Section("Members") {
                 HStack {

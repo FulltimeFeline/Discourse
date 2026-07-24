@@ -473,7 +473,8 @@ final class RoomListViewModel {
                     visibleRoomIds = spaceChildIds[spaceId]
                 }
             } catch {
-                // Likely missing power level; leave state unchanged.
+                // Likely missing power level; leave state unchanged but say so.
+                reportActionError(String(localized: "Couldn't remove from space: \(error.localizedDescription)"))
             }
         } else {
             await fileRoom(roomId, intoSpace: spaceId)
@@ -687,7 +688,12 @@ final class RoomListViewModel {
         guard !invitePermissionChecked.contains(roomId) else { return }
         invitePermissionChecked.insert(roomId)
         let room = ffiRoom(withId: roomId) ?? (try? service.client.getRoom(roomId: roomId)) ?? nil
-        guard let room, let levels = try? await room.getPowerLevels() else { return }
+        guard let room, let levels = try? await room.getPowerLevels() else {
+            // A cancelled row `.task` (fast fling) must not poison the
+            // fail-closed cache for the rest of the session.
+            if Task.isCancelled { invitePermissionChecked.remove(roomId) }
+            return
+        }
         if levels.canOwnUserInvite() { invitableRoomIds.insert(roomId) }
     }
 
@@ -702,7 +708,10 @@ final class RoomListViewModel {
         guard !spaceManageChecked.contains(spaceId) else { return }
         spaceManageChecked.insert(spaceId)
         let room = ffiRoom(withId: spaceId) ?? (try? service.client.getRoom(roomId: spaceId)) ?? nil
-        guard let room, let levels = try? await room.getPowerLevels() else { return }
+        guard let room, let levels = try? await room.getPowerLevels() else {
+            if Task.isCancelled { spaceManageChecked.remove(spaceId) }
+            return
+        }
         if levels.canOwnUserSendState(stateEvent: .spaceChild) {
             manageableSpaceIds.insert(spaceId)
         }
@@ -719,7 +728,10 @@ final class RoomListViewModel {
         guard !movePermissionChecked.contains(roomId) else { return }
         movePermissionChecked.insert(roomId)
         let room = ffiRoom(withId: roomId) ?? (try? service.client.getRoom(roomId: roomId)) ?? nil
-        guard let room, let levels = try? await room.getPowerLevels() else { return }
+        guard let room, let levels = try? await room.getPowerLevels() else {
+            if Task.isCancelled { movePermissionChecked.remove(roomId) }
+            return
+        }
         if levels.canOwnUserSendState(stateEvent: .spaceParent) {
             moveableRoomIds.insert(roomId)
         }

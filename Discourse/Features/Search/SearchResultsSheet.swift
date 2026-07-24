@@ -113,6 +113,9 @@ struct SearchResultsSheet: View {
     @State private var canLoadMore = false
     @State private var category: MessageSearch.Category = .all
     @State private var iterator: GlobalSearchIterator?
+    /// Set when the search request itself failed, so the view can offer a
+    /// retry instead of a false "No Results".
+    @State private var searchError: String?
 
     init(scope: SessionScope, query: String) {
         self.scope = scope
@@ -141,6 +144,7 @@ struct SearchResultsSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
             }
             resultsContent
@@ -187,6 +191,17 @@ struct SearchResultsSheet: View {
             if isLoading && hits.isEmpty {
                 ProgressView("Searching…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let searchError, hits.isEmpty {
+                ContentUnavailableView {
+                    Label("Search Failed", systemImage: "exclamationmark.magnifyingglass")
+                } description: {
+                    Text(searchError)
+                } actions: {
+                    Button("Try Again") {
+                        Task { await startSearch() }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filtered.isEmpty {
                 ContentUnavailableView.search(text: searchText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -226,6 +241,7 @@ struct SearchResultsSheet: View {
         hits = []
         iterator = nil
         canLoadMore = false
+        searchError = nil
         guard !trimmed.isEmpty else { return }
         isLoading = true
         defer { isLoading = false }
@@ -236,6 +252,7 @@ struct SearchResultsSheet: View {
             await loadMore()
         } catch {
             canLoadMore = false
+            searchError = error.localizedDescription
         }
     }
 
@@ -243,8 +260,17 @@ struct SearchResultsSheet: View {
         guard let iterator else { return }
         isLoading = true
         defer { isLoading = false }
-        guard let batch = try? await iterator.nextEvents() else {
+        let batch: [GlobalSearchResult]
+        do {
+            // nil = no more results, distinct from a request failure.
+            guard let next = try await iterator.nextEvents() else {
+                canLoadMore = false
+                return
+            }
+            batch = next
+        } catch {
             canLoadMore = false
+            if hits.isEmpty { searchError = error.localizedDescription }
             return
         }
         canLoadMore = !batch.isEmpty
@@ -314,6 +340,7 @@ struct RoomSearchSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
             }
             searchContent
@@ -538,7 +565,7 @@ private struct CategorySegmentedControl: View {
                     .padding(.vertical, 7)
                     .background {
                         if selected {
-                            Capsule().fill(.tint)
+                            Capsule().fill(Color.accentColor.opacity(0.85))
                                 .matchedGeometryEffect(id: "pill", in: pill)
                         }
                     }

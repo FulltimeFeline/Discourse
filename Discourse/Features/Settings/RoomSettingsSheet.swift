@@ -828,6 +828,7 @@ private struct RoleLabelsEditor: View {
                             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(Text("Choose icon for level \(level)"))
                     .popover(isPresented: Binding(get: { emojiLevel == level },
                                                   set: { if !$0 { emojiLevel = nil } })) {
                         EmojiPickerView(
@@ -855,12 +856,18 @@ private struct RoleLabelsEditor: View {
                             .overlay(Circle().strokeBorder(.primary,
                                      lineWidth: binding.wrappedValue.color == hex ? 2 : 0))
                             .onTapGesture { binding.wrappedValue.color = hex }
+                            .accessibilityElement()
+                            .accessibilityAddTraits(binding.wrappedValue.color == hex
+                                                    ? [.isButton, .isSelected] : .isButton)
+                            .accessibilityLabel(Text("Color \(hex)"))
+                            .accessibilityAction { binding.wrappedValue.color = hex }
                     }
                     Button { binding.wrappedValue.color = nil } label: {
                         Image(systemName: "slash.circle")
                     }
                     .buttonStyle(.plain)
                     .help("No color")
+                    .accessibilityLabel(Text("No color"))
                 }
             }
         }

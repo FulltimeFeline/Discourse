@@ -47,6 +47,7 @@ struct SpaceHomeView: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
                 .padding(10)
             }
@@ -119,7 +120,10 @@ struct SpaceHomeView: View {
             bannerItem = nil
             let mime = item.supportedContentTypes.first?.preferredMIMEType ?? "image/png"
             Task {
-                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                guard let data = try? await item.loadTransferable(type: Data.self) else {
+                    editStatus = (String(localized: "Couldn't read that image."), true)
+                    return
+                }
                 setBanner(data: data, mime: mime)
             }
         }

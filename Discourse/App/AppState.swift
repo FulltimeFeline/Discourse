@@ -74,6 +74,9 @@ final class AppState {
     /// Warm sessions, kept across account switches. Keyed by user ID.
     private var scopes: [String: SessionScope] = [:]
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
+    /// Account awaiting reconnection while `.disconnected`, so a manual retry
+    /// knows who to activate.
+    @ObservationIgnored private var reconnectUserId: String?
 
     var activeUserId: String? {
         if case .active(let scope) = phase { return scope.userId }
@@ -357,6 +360,7 @@ final class AppState {
             // can't build; a revoked token surfaces later, during sync. So keep
             // retrying rather than logging out on a transient network blip.
             phase = .disconnected
+            reconnectUserId = userId
             scheduleReconnect(userId: userId)
         }
     }
@@ -372,6 +376,15 @@ final class AppState {
                 await self.activate(userId: userId)
             }
         }
+    }
+
+    /// Manual retry from the disconnected screen — the user just fixed their
+    /// network and shouldn't wait out the 30s timer.
+    func retryConnectionNow() {
+        guard case .disconnected = phase, let id = reconnectUserId else { return }
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        Task { await activate(userId: id) }
     }
 }
 
@@ -652,6 +665,19 @@ final class SessionScope {
     private func touchTimeline(_ roomId: String) {
         timelineAccessOrder.removeAll { $0 == roomId }
         timelineAccessOrder.append(roomId)
+    }
+
+    /// Pauses/resumes every cached timeline's ephemeral long-poll; called from
+    /// the scene-phase handler so a backgrounded app (or closed macOS window)
+    /// doesn't keep a 30s /sync loop running.
+    func setEphemeralSyncPaused(_ paused: Bool) {
+        for timeline in timelines.values {
+            if paused {
+                timeline.pauseEphemeralSync()
+            } else {
+                timeline.resumeEphemeralSync()
+            }
+        }
     }
 
     private func evictTimelinesIfNeeded() {

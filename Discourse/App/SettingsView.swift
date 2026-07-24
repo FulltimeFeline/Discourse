@@ -173,7 +173,10 @@ private struct ProfileEditSection: View {
             let mime = item.supportedContentTypes.first?.preferredMIMEType ?? "image/png"
             let target = imageTarget
             Task {
-                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                guard let data = try? await item.loadTransferable(type: Data.self) else {
+                    status = (String(localized: "Couldn't read that image."), true)
+                    return
+                }
                 applyPickedImage(data: data, mime: mime, target: target)
             }
         }
@@ -193,7 +196,7 @@ private struct ProfileEditSection: View {
                 BannerImageView(mxcUrl: banner)
                     .frame(height: 96)
                     .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             HStack(spacing: 10) {
                 Button(scope.ownBannerURL == nil ? "Add Banner…" : "Change Banner…") {
@@ -513,6 +516,7 @@ private struct EmoteIconPicker: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
                 .keyboardShortcut(.cancelAction)
             }
             .padding(12)

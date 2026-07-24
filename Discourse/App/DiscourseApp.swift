@@ -28,6 +28,10 @@ struct DiscourseApp: App {
         }
         #if os(macOS)
         .defaultSize(width: 1100, height: 720)
+        // Actually enforce the content minimums on the window itself, so a
+        // window restored smaller than them grows instead of the layout
+        // overflowing the frame.
+        .windowResizability(.contentMinSize)
         #endif
         // Pause presence polling in the background (macOS hits .background when
         // windows are closed/occluded too), resume on return. Sync is the SDK's.
@@ -36,6 +40,7 @@ struct DiscourseApp: App {
             switch newPhase {
             case .background:
                 scope.presence.pause()
+                scope.setEphemeralSyncPaused(true)
                 #if os(iOS)
                 // Stop sync cleanly before suspension, under a short background
                 // assertion. macOS stays always-on (powers local notifications
@@ -55,6 +60,7 @@ struct DiscourseApp: App {
                 #endif
             case .active:
                 scope.presence.resume()
+                scope.setEphemeralSyncPaused(false)
                 #if os(iOS)
                 Task { await scope.service.resumeSync() }
                 #endif
@@ -168,6 +174,12 @@ private struct LaunchBackdrop: View {
 
 struct RootView: View {
     @Environment(AppState.self) private var appState
+    #if os(macOS)
+    /// Mirrors TimelineView's toggle: the 230pt details column adds to the
+    /// window's width floor while it's open, so opening it can't squeeze the
+    /// timeline below its own minimum.
+    @AppStorage("showsDetailsColumn") private var showsDetails = false
+    #endif
 
     var body: some View {
         switch appState.phase {
@@ -193,6 +205,10 @@ struct RootView: View {
                     Text("Trying to reconnect…")
                         .foregroundStyle(.secondary)
                 }
+                Button("Try Again") {
+                    appState.retryConnectionNow()
+                }
+                .buttonStyle(.bordered)
             }
             #if os(macOS)
             .frame(minWidth: 480, minHeight: 480)
@@ -201,7 +217,10 @@ struct RootView: View {
             MainWindow(scope: scope)
                 .id(scope.userId)
                 #if os(macOS)
-                .frame(minHeight: 480)
+                // Floor = rail (~80) + room-list minimum (240) + enough detail
+                // column for a readable timeline and composer; the details
+                // column adds its full width on top while open.
+                .frame(minWidth: showsDetails ? 990 : 760, minHeight: 480)
                 #endif
         }
     }
@@ -248,17 +267,22 @@ struct MainWindow: View {
             .environment(\.presenceService, scope.presence)
             .environment(\.pronounsStore, scope.pronouns)
             .overlay(alignment: .top) {
-                if let call = appState.ringingCall {
-                    IncomingCallView(call: call) {
-                        appState.ringingCall = nil
-                        appState.pendingCallJoin = call.roomId
-                        appState.pendingRoomNavigation = call.roomId
-                    } decline: {
-                        appState.ringingCall = nil
+                // Animation scoped inside the overlay: on the whole window it
+                // applied the ringing spring to every in-flight layout change.
+                ZStack {
+                    if let call = appState.ringingCall {
+                        IncomingCallView(call: call) {
+                            appState.ringingCall = nil
+                            appState.pendingCallJoin = call.roomId
+                            appState.pendingRoomNavigation = call.roomId
+                        } decline: {
+                            appState.ringingCall = nil
+                        }
                     }
                 }
+                .animation(prefs.reduceMotion ? nil : .spring(duration: 0.3),
+                           value: appState.ringingCall)
             }
-            .animation(.spring(duration: 0.3), value: appState.ringingCall)
     }
 
     #if os(iOS)
@@ -416,6 +440,10 @@ struct MainWindow: View {
                         }
                     }
             }
+            // The dot is purely visual; speak it.
+            .accessibilityValue(appState.otherAccountsHaveUnread
+                                ? Text("Other accounts have unread messages")
+                                : Text(verbatim: ""))
         }
         .padding(4)
         .adaptiveGlass(in: Capsule(), reduceTransparency: prefs.reduceTransparency)
@@ -643,10 +671,16 @@ struct MainWindow: View {
                     // tint as the timeline detail instead of a flat color.
                     #if os(macOS)
                     .background(WindowMaterial().ignoresSafeArea())
+                    // The declared column bounds don't hold on macOS 26: drags
+                    // can overshoot the max (overflowing the window) and
+                    // collapse past the min despite the pinned visibility
+                    // binding. Enforce the same 240–400 directly on the AppKit
+                    // split view item, which owns the divider's travel.
+                    .background(SidebarBoundsEnforcer(min: 240, max: 320))
                     #else
                     .background(Color.platformWindowBackground)
                     #endif
-                    .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 400)
+                    .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 320)
                     // iPad keeps the system toggle; macOS pins the columns.
                     #if os(macOS)
                     .toolbar(removing: .sidebarToggle)
@@ -899,6 +933,88 @@ struct MainWindow: View {
 /// directly in a `navigationDestination` closure aren't observation-tracked,
 /// so a cold-launch-restored room stayed on the spinner forever; here the body
 /// re-runs when the room list updates.
+#if os(macOS)
+/// Pins the room-list column's width bounds and non-collapsibility on the
+/// AppKit split view item backing NavigationSplitView's sidebar column.
+/// SwiftUI's declared column bounds and visibility binding don't govern the
+/// divider's interactive travel on macOS 26 — the NSSplitViewItem does — so a
+/// probe view reaches down and sets them there, re-asserting after every
+/// divider resize in case SwiftUI rewrites the item.
+private struct SidebarBoundsEnforcer: NSViewRepresentable {
+    let min: CGFloat
+    let max: CGFloat
+
+    func makeNSView(context: Context) -> NSView { Probe(min: min, max: max) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        private let minWidth: CGFloat
+        private let maxWidth: CGFloat
+        private var observer: NSObjectProtocol?
+
+        init(min: CGFloat, max: CGFloat) {
+            minWidth = min
+            maxWidth = max
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        // The observer is cleared here on the window == nil pass; a deinit
+        // can't touch main-actor state under Swift 6.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+                self.observer = nil
+            }
+            guard window != nil else { return }
+            // The split view isn't assembled until after the current layout
+            // pass; retry briefly until it appears.
+            attach(attempt: 0)
+        }
+
+        private func attach(attempt: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.25)) { [weak self] in
+                guard let self, self.window != nil else { return }
+                if !self.enforce(), attempt < 8 {
+                    self.attach(attempt: attempt + 1)
+                }
+            }
+        }
+
+        /// Finds the enclosing split view item and pins its bounds. Returns
+        /// false while the split view hierarchy doesn't exist yet.
+        @discardableResult
+        private func enforce() -> Bool {
+            var view: NSView? = self
+            while let current = view {
+                if let splitView = current as? NSSplitView,
+                   let controller = splitView.delegate as? NSSplitViewController {
+                    for item in controller.splitViewItems
+                    where isDescendant(of: item.viewController.view) {
+                        item.canCollapse = false
+                        if item.isCollapsed { item.isCollapsed = false }
+                        item.minimumThickness = minWidth
+                        item.maximumThickness = maxWidth
+                        if observer == nil {
+                            observer = NotificationCenter.default.addObserver(
+                                forName: NSSplitView.didResizeSubviewsNotification,
+                                object: splitView, queue: .main) { [weak self] _ in
+                                    self?.enforce()
+                                }
+                        }
+                        return true
+                    }
+                }
+                view = current.superview
+            }
+            return false
+        }
+    }
+}
+#endif
+
 private struct RoomTimelineDestination: View {
     let roomId: String
     let scope: SessionScope

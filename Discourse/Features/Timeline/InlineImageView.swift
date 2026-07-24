@@ -62,7 +62,9 @@ struct InlineImageView: View {
                     }
                 }
                 .quickLookPreview($previewURL)
+                .help("Open image")
                 #if os(macOS)
+                .pointerStyle(.link)
                 // Drag out to Finder / another app; the full resolution
                 // downloads to a temp file at drop time.
                 .draggable(TimelineImageTransfer(image: image, loader: loader))

@@ -90,7 +90,11 @@ struct SidebarView: View {
         )
         // Prime the invite- and space-move-permission caches for visible rows,
         // so the context menu (built synchronously) can filter without awaiting.
+        // Debounced so a fast fling doesn't fire FFI power-level fetches for
+        // every row it passes.
         .task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
             await viewModel.refreshInvitePermission(forRoomId: room.id)
             await viewModel.refreshMovePermission(forRoomId: room.id)
             for space in viewModel.spaces {
@@ -671,7 +675,12 @@ struct SidebarView: View {
         // fill, so the rows sit on the same color as the header above them.
         .scrollContentBackground(.hidden)
         .overlay {
-            if visible.isEmpty {
+            // Only when the list is truly empty: during a name filter the
+            // "Search messages…" row is the no-matches affordance, and pending
+            // invites must stay visible.
+            if visible.isEmpty,
+               debouncedQuery.trimmingCharacters(in: .whitespaces).isEmpty,
+               invites.isEmpty {
                 if viewModel.isLoaded {
                     ContentUnavailableView("No Rooms", systemImage: "tray",
                                            description: Text(viewModel.selectedSpaceId == nil
@@ -1019,6 +1028,7 @@ struct InviteRow: View {
 struct RoomRow: View {
     let room: RoomSummary
     var isSelected = false
+    @Environment(Preferences.self) private var prefs
 
     /// Bright while there's something new, dimmed once read. Selected rows
     /// stay bright.
@@ -1070,7 +1080,8 @@ struct RoomRow: View {
                         .foregroundStyle(titleStyle)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .animation(.easeOut(duration: 0.15), value: isUnread)
+                        .animation(prefs.reduceMotion ? nil : .easeOut(duration: 0.15),
+                                   value: isUnread)
                     if room.isVideoRoom {
                         Image(systemName: "video.fill")
                             .font(.caption2)
@@ -1134,7 +1145,8 @@ struct RoomRow: View {
         }
         .padding(.vertical, 6)
         // Scoped to badgeCount so unrelated row updates don't animate.
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: room.badgeCount)
+        .animation(prefs.reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8),
+                   value: room.badgeCount)
         // Name, glyphs, timestamp, and preview read as one summary.
         .accessibilityElement(children: .combine)
         .accessibilityValue(Text(accessibilityUnreadValue))

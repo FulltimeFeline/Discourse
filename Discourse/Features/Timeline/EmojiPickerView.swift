@@ -8,6 +8,20 @@ final class HeaderPositionBox<Key: Hashable> {
     var values: [Key: CGFloat] = [:]
 }
 
+/// Hover-highlighted backing for a picker grid cell.
+private struct EmojiCellLabel<Content: View>: View {
+    @ViewBuilder let content: Content
+    @State private var isHovered = false
+
+    var body: some View {
+        content
+            .background(isHovered ? AnyShapeStyle(.quaternary.opacity(0.6))
+                                  : AnyShapeStyle(.clear),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .onHover { isHovered = $0 }
+    }
+}
+
 /// Compact emoji picker popover; the system palette can't be anchored to a
 /// button (it follows the caret), so we draw our own.
 struct EmojiPickerView: View {
@@ -247,12 +261,14 @@ struct EmojiPickerView: View {
                     insert(emoji)
                     remember(emoji)
                 } label: {
-                    Text(emoji)
-                        .font(.system(size: emojiFontSize))
-                        .frame(width: cellSize, height: cellSize)
-                        .contentShape(Rectangle())
+                    EmojiCellLabel {
+                        Text(emoji)
+                            .font(.system(size: emojiFontSize))
+                            .frame(width: cellSize, height: cellSize)
+                            .contentShape(Rectangle())
+                    }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressFeedbackStyle())
             }
         }
     }
@@ -364,11 +380,13 @@ struct EmojiPickerView: View {
                 Button {
                     insertCustom?(emote)
                 } label: {
-                    EmoteImageView(url: emote.url, size: cellSize - 8, loader: loader)
-                        .frame(width: cellSize, height: cellSize)
-                        .contentShape(Rectangle())
+                    EmojiCellLabel {
+                        EmoteImageView(url: emote.url, size: cellSize - 8, loader: loader)
+                            .frame(width: cellSize, height: cellSize)
+                            .contentShape(Rectangle())
+                    }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressFeedbackStyle())
                 .help(emote.token)
                 .accessibilityLabel(Text(emote.token))
             }

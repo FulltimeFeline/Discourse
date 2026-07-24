@@ -288,6 +288,7 @@ struct StickerPickerView: View {
                                     }
                                     .buttonStyle(.plain)
                                     .help(pack)
+                                    .accessibilityLabel(Text(pack))
                                 }
                                 ForEach(roomPacks) { pack in
                                     Button {

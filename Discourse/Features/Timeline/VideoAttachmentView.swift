@@ -27,6 +27,10 @@ struct VideoAttachmentView: View {
                 .overlay(alignment: .bottomTrailing) { durationBadge }
                 .onTapGesture { open() }
                 .quickLookPreview($previewURL)
+                .help("Play video")
+                #if os(macOS)
+                .pointerStyle(.link)
+                #endif
                 .accessibilityLabel(accessibilityText)
                 .accessibilityAddTraits(.isButton)
                 .task(id: video.source.url) {
