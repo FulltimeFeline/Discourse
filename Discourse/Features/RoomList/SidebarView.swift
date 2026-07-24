@@ -106,14 +106,12 @@ struct SidebarView: View {
 
     private func selectionFill(_ isSelected: Bool) -> AnyShapeStyle {
         guard isSelected else { return AnyShapeStyle(.clear) }
-        #if os(macOS)
-        // List(selection:) draws its own highlight; a custom fill would double it.
-        return AnyShapeStyle(.clear)
-        #else
+        // Both platforms draw the accent fill themselves; on macOS the
+        // NSTableView pill (which follows the OS accent, not the app tint) is
+        // switched off by ListSelectionHighlightDisabler.
         return isWindowInactive
             ? AnyShapeStyle(Color.gray.opacity(0.35))
             : AnyShapeStyle(.tint.opacity(0.85))
-        #endif
     }
 
     private func sectionHeader(_ title: LocalizedStringKey) -> some View {
@@ -674,6 +672,11 @@ struct SidebarView: View {
         #endif
         return list
         .listStyle(.plain)
+        #if os(macOS)
+        // The table's own selection pill follows the OS accent; the rows draw
+        // an app-accent fill instead (see selectionFill).
+        .background(ListSelectionHighlightDisabler())
+        #endif
         // Show the sidebar's platformWindowBackground instead of the list's own
         // fill, so the rows sit on the same color as the header above them.
         .scrollContentBackground(.hidden)
@@ -1037,26 +1040,20 @@ struct RoomRow: View {
     /// stay bright.
     private var isUnread: Bool { isSelected || room.hasAnyUnread }
 
-    /// White text on the iOS accent selection fill; semantic .primary would be
-    /// black-on-blue in Light Mode. macOS keeps semantic colors (native highlight).
+    /// White text on the accent selection fill (both platforms draw it);
+    /// semantic .primary would be black-on-accent in Light Mode.
     private var titleStyle: AnyShapeStyle {
-        #if os(iOS)
         if isSelected { return AnyShapeStyle(.white) }
-        #endif
         return isUnread ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
     private var subtitleStyle: AnyShapeStyle {
-        #if os(iOS)
         if isSelected { return AnyShapeStyle(.white.opacity(0.8)) }
-        #endif
         return isUnread ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary)
     }
 
     private var detailStyle: AnyShapeStyle {
-        #if os(iOS)
         if isSelected { return AnyShapeStyle(.white.opacity(0.8)) }
-        #endif
         return AnyShapeStyle(.tertiary)
     }
 
@@ -1274,3 +1271,43 @@ struct RoomAvatarView: View {
         return palette[abs(hash) % palette.count]
     }
 }
+
+#if os(macOS)
+/// Turns off the NSTableView selection pill behind the room list. The system
+/// draws it in the OS accent color, which fights the app-accent fill the rows
+/// draw themselves (selectionFill); selection state and ↑/↓ keyboard movement
+/// are unaffected.
+private struct ListSelectionHighlightDisabler: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        // The table doesn't exist until after the current layout pass.
+        DispatchQueue.main.async { Self.disable(from: view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { Self.disable(from: nsView) }
+    }
+
+    /// The probe sits as a background sibling of the List, so walk up a level
+    /// at a time and search descendants — the first table found is the list's.
+    private static func disable(from view: NSView) {
+        var current: NSView? = view.superview
+        while let level = current {
+            if let table = findTable(in: level) {
+                table.selectionHighlightStyle = .none
+                return
+            }
+            current = level.superview
+        }
+    }
+
+    private static func findTable(in view: NSView) -> NSTableView? {
+        if let table = view as? NSTableView { return table }
+        for subview in view.subviews {
+            if let table = findTable(in: subview) { return table }
+        }
+        return nil
+    }
+}
+#endif
