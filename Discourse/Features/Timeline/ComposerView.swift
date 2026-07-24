@@ -410,7 +410,7 @@ struct ComposerView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(index == selectedSuggestion
-                        ? AnyShapeStyle(Color.accentColor.opacity(0.25))
+                        ? AnyShapeStyle(.tint.opacity(0.25))
                         : AnyShapeStyle(.clear),
                         in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .contentShape(Rectangle())
@@ -447,7 +447,7 @@ struct ComposerView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(index == selectedSuggestion
-                        ? AnyShapeStyle(Color.accentColor.opacity(0.25))
+                        ? AnyShapeStyle(.tint.opacity(0.25))
                         : AnyShapeStyle(.clear),
                         in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .contentShape(Rectangle())

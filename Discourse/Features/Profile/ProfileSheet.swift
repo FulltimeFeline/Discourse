@@ -249,9 +249,12 @@ struct ProfileSheet: View {
                 if let banner = pronounsStore?.bannerURL(for: target.userId) {
                     BannerImageView(mxcUrl: banner)
                 } else {
-                    LinearGradient(colors: [Color.accentColor.opacity(0.35),
-                                            Color.accentColor.opacity(0.10)],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    // Gradient via mask so the fallback banner follows the
+                    // .tint (LinearGradient itself only takes concrete Colors).
+                    Rectangle().fill(.tint)
+                        .mask(LinearGradient(colors: [.black.opacity(0.35),
+                                                      .black.opacity(0.10)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
                 }
             }
             .frame(height: 112)

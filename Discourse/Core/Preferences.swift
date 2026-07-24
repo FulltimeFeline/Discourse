@@ -19,7 +19,8 @@ final class Preferences {
         self.defaults = defaults
         // Appearance
         appearance = defaults.enumValue(AppearanceMode.self, "pref.appearance") ?? .system
-        accentColor = defaults.enumValue(AccentChoice.self, "pref.accentColor") ?? .system
+        accentColor = defaults.enumValue(AccentChoice.self, "pref.accentColor") ?? .appDefault
+        tintedWindow = defaults.boolValue("pref.tintedWindow", default: true)
         messageDensity = defaults.enumValue(MessageDensity.self, "pref.messageDensity") ?? .comfortable
         use24HourTime = defaults.boolValue("pref.use24HourTime", default: false)
         coloredSenderNames = defaults.boolValue("pref.coloredSenderNames", default: true)
@@ -90,6 +91,8 @@ final class Preferences {
     // MARK: Appearance
     var appearance: AppearanceMode { didSet { defaults.setEnum(appearance, "pref.appearance") } }
     var accentColor: AccentChoice { didSet { defaults.setEnum(accentColor, "pref.accentColor") } }
+    /// Washes the window-background surfaces with the accent; off = system gray.
+    var tintedWindow: Bool { didSet { defaults.set(tintedWindow, forKey: "pref.tintedWindow") } }
     var messageDensity: MessageDensity { didSet { defaults.setEnum(messageDensity, "pref.messageDensity") } }
     var use24HourTime: Bool { didSet { defaults.set(use24HourTime, forKey: "pref.use24HourTime") } }
     var coloredSenderNames: Bool { didSet { defaults.set(coloredSenderNames, forKey: "pref.coloredSenderNames") } }
@@ -150,7 +153,8 @@ final class Preferences {
 
     func resetToDefaults() {
         appearance = .system
-        accentColor = .system
+        accentColor = .appDefault
+        tintedWindow = true
         messageDensity = .comfortable
         use24HourTime = false
         coloredSenderNames = true
@@ -191,6 +195,12 @@ final class Preferences {
     /// Resolved accent tint, or nil for the asset-catalog accent.
     var resolvedTint: Color? { accentColor.color }
 
+    /// Low-opacity accent wash layered over window-background surfaces
+    /// (rail, room list, timeline). Clear when the tinted window is off.
+    var windowWash: Color {
+        tintedWindow ? (resolvedTint ?? Color("AccentColor")).opacity(0.06) : .clear
+    }
+
     var groupingWindow: TimeInterval { TimeInterval(groupingWindowMinutes * 60) }
 
     /// In-app toggle OR system "Reduce Motion". Prefer this at animation sites.
@@ -221,11 +231,13 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 }
 
 enum AccentChoice: String, CaseIterable, Identifiable {
+    case appDefault = "default"
     case system, blue, indigo, purple, pink, red, orange, yellow, green, teal, mint, brown, gray
     var id: String { rawValue }
     var label: LocalizedStringKey {
         switch self {
-        case .system: "Default"
+        case .appDefault: "Default"
+        case .system: "System"
         case .blue: "Blue"
         case .indigo: "Indigo"
         case .purple: "Purple"
@@ -240,10 +252,20 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         case .gray: "Graphite"
         }
     }
-    /// nil for `.system` (uses the asset-catalog AccentColor).
+    /// `.appDefault` tints explicitly with the asset AccentColor (the icon
+    /// purple): left as nil, macOS would substitute the user's System Settings
+    /// accent unless that's set to "multicolour". `.system` follows the
+    /// OS-wide accent deliberately (always blue on iOS, which has no such
+    /// setting).
     var color: Color? {
         switch self {
-        case .system: nil
+        case .appDefault: Color("AccentColor")
+        case .system:
+            #if os(macOS)
+            Color(nsColor: .controlAccentColor)
+            #else
+            Color(uiColor: .tintColor)
+            #endif
         case .blue: .blue
         case .indigo: .indigo
         case .purple: .purple
@@ -258,8 +280,9 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         case .gray: .gray
         }
     }
-    /// Concrete swatch for the picker (system shows the app accent).
-    var swatch: Color { color ?? .accentColor }
+    /// Concrete swatch for the picker. Default reads the asset directly so it
+    /// shows the icon purple even while another accent tints the environment.
+    var swatch: Color { color ?? Color("AccentColor") }
 }
 
 enum MessageDensity: String, CaseIterable, Identifiable {

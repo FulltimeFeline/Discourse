@@ -958,7 +958,7 @@ struct RoomDetailsColumn: View {
     private var selectedFill: AnyShapeStyle {
         isWindowInactive
             ? AnyShapeStyle(Color.gray.opacity(0.35))
-            : AnyShapeStyle(Color.accentColor.opacity(0.85))
+            : AnyShapeStyle(.tint.opacity(0.85))
     }
 }
 

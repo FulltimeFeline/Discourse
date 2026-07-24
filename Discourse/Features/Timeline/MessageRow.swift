@@ -125,7 +125,7 @@ struct MessageRow: View {
                     } label: {
                     HStack(spacing: 5) {
                         RoundedRectangle(cornerRadius: 1)
-                            .fill(Color.accentColor.opacity(0.85))
+                            .fill(.tint.opacity(0.85))
                             .frame(width: 2, height: 15)
                         Image(systemName: "arrowshape.turn.up.left.fill")
                             .font(.caption2)
@@ -957,7 +957,7 @@ private struct QuotedBodyView: View {
                 if block.isQuote {
                     HStack(alignment: .top, spacing: 6) {
                         RoundedRectangle(cornerRadius: 1.5)
-                            .fill(Color.accentColor.opacity(0.6))
+                            .fill(.tint.opacity(0.6))
                             .frame(width: 3)
                         segment(block.text)
                             .foregroundStyle(.secondary)
@@ -1159,7 +1159,7 @@ struct ReactionChips: View {
                         mine ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.quaternary.opacity(0.5)),
                         in: Capsule()
                     )
-                    .overlay(Capsule().strokeBorder(mine ? Color.accentColor : .clear, lineWidth: 1))
+                    .overlay(Capsule().strokeBorder(mine ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear), lineWidth: 1))
                     #if os(iOS)
                     // Extended hit target, not a bigger chip. Downward-biased:
                     // symmetric ±9 overlapped the message text above.

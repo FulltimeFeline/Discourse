@@ -55,7 +55,10 @@ struct SpacesRail: View {
                            hasUnread: viewModel.homeHasUnread,
                            hasMention: viewModel.homeHasMention) {
                     ZStack {
-                        Circle().fill(Color.accentColor.gradient)
+                        // Color.accentColor only reads the asset-catalog accent;
+                        // the accent preference is applied as .tint, which it
+                        // ignores — resolve through Preferences instead.
+                        Circle().fill((prefs.resolvedTint ?? Color.accentColor).gradient)
                         Image(systemName: "envelope.fill")
                             .font(.system(size: 17, weight: .medium))
                             .foregroundStyle(.white)

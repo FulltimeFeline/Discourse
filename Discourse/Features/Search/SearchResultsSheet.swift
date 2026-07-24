@@ -565,7 +565,7 @@ private struct CategorySegmentedControl: View {
                     .padding(.vertical, 7)
                     .background {
                         if selected {
-                            Capsule().fill(Color.accentColor.opacity(0.85))
+                            Capsule().fill(.tint.opacity(0.85))
                                 .matchedGeometryEffect(id: "pill", in: pill)
                         }
                     }

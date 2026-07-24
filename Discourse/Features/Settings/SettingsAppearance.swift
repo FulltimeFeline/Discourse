@@ -21,7 +21,7 @@ struct AppearanceSettingsView: View {
                 #endif
             }
 
-            Section("Accent Color") {
+            Section {
                 LazyVGrid(columns: swatchColumns, spacing: 12) {
                     ForEach(AccentChoice.allCases) { choice in
                         AccentSwatch(choice: choice,
@@ -31,6 +31,11 @@ struct AppearanceSettingsView: View {
                     }
                 }
                 .padding(.vertical, 4)
+                Toggle("Tinted Window", isOn: $prefs.tintedWindow)
+            } header: {
+                Text("Accent Color")
+            } footer: {
+                Text("Washes the window background with the accent color; off keeps the system gray.")
             }
 
             Section("Message Density") {

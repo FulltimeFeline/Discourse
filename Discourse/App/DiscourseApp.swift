@@ -406,6 +406,7 @@ struct MainWindow: View {
                             .navigationBarTitleDisplayMode(.inline)
                     }
                     .environment(\.closeChat, closeChat)
+                    .background(prefs.windowWash.ignoresSafeArea())
                     .background(Color.platformWindowBackground)
                     .shadow(color: .black.opacity(0.18), radius: 14, x: -5)
                     .offset(x: (1 - chatProgress) * width)
@@ -488,6 +489,7 @@ struct MainWindow: View {
             HStack(spacing: 0) {
                 SpacesRail(viewModel: scope.roomList, scope: scope)
                     .frame(width: 68)
+                    .background(prefs.windowWash.ignoresSafeArea())
                     .background(Color.platformWindowBackground)
                 Divider()
                     .padding(.top, 28)
@@ -514,6 +516,7 @@ struct MainWindow: View {
                             ),
                             activeSheet: $appState.newChatSheet,
                             showsVerification: $showsVerification)
+                    .background(prefs.windowWash.ignoresSafeArea())
                     .background(Color.platformWindowBackground)
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -652,11 +655,15 @@ struct MainWindow: View {
             SpacesRail(viewModel: scope.roomList, scope: scope)
                 .frame(width: railWidth)
                 .background(TrafficLightWidthReader(width: $railWidth))
-                .background(SidebarMaterial().ignoresSafeArea())
+                .background {
+                    ZStack { SidebarMaterial(); prefs.windowWash }
+                        .ignoresSafeArea()
+                }
             #else
             SpacesRail(viewModel: scope.roomList, scope: scope)
                 .frame(width: 68)
                 .background(.ultraThinMaterial)
+                .background(prefs.windowWash)
             #endif
 
             NavigationSplitView(columnVisibility: columns) {
@@ -670,7 +677,10 @@ struct MainWindow: View {
                     // macOS: the window material so the room list takes the same
                     // tint as the timeline detail instead of a flat color.
                     #if os(macOS)
-                    .background(WindowMaterial().ignoresSafeArea())
+                    .background {
+                        ZStack { WindowMaterial(); prefs.windowWash }
+                            .ignoresSafeArea()
+                    }
                     // The declared column bounds don't hold on macOS 26: drags
                     // can overshoot the max (overflowing the window) and
                     // collapse past the min despite the pinned visibility
@@ -678,6 +688,7 @@ struct MainWindow: View {
                     // split view item, which owns the divider's travel.
                     .background(SidebarBoundsEnforcer(min: 240, max: 320))
                     #else
+                    .background(prefs.windowWash.ignoresSafeArea())
                     .background(Color.platformWindowBackground)
                     #endif
                     .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 320)
@@ -698,6 +709,8 @@ struct MainWindow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Wash between the window background and the timeline content.
+                .background(prefs.windowWash.ignoresSafeArea())
             }
         }
     }

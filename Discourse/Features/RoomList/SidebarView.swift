@@ -18,6 +18,7 @@ extension View {
 
 struct SidebarView: View {
     @Environment(AppState.self) private var appState
+    @Environment(Preferences.self) private var prefs
     let scope: SessionScope
     let viewModel: RoomListViewModel
     @Binding var selection: String?
@@ -111,7 +112,7 @@ struct SidebarView: View {
         #else
         return isWindowInactive
             ? AnyShapeStyle(Color.gray.opacity(0.35))
-            : AnyShapeStyle(Color.accentColor.opacity(0.85))
+            : AnyShapeStyle(.tint.opacity(0.85))
         #endif
     }
 
@@ -261,9 +262,11 @@ struct SidebarView: View {
                 // same tint as the timeline detail pane.
                 .background {
                     #if os(macOS)
-                    WindowMaterial().ignoresSafeArea(edges: .top)
+                    ZStack { WindowMaterial(); prefs.windowWash }
+                        .ignoresSafeArea(edges: .top)
                     #else
-                    Color.platformWindowBackground.ignoresSafeArea(edges: .top)
+                    ZStack { Color.platformWindowBackground; prefs.windowWash }
+                        .ignoresSafeArea(edges: .top)
                     #endif
                 }
             }
