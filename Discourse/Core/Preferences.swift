@@ -19,7 +19,12 @@ final class Preferences {
         self.defaults = defaults
         // Appearance
         appearance = defaults.enumValue(AppearanceMode.self, "pref.appearance") ?? .system
-        accentColor = defaults.enumValue(AccentChoice.self, "pref.accentColor") ?? .appDefault
+        var storedAccent = defaults.enumValue(AccentChoice.self, "pref.accentColor") ?? .appDefault
+        #if os(iOS)
+        // No OS accent on iOS; the System option isn't offered there.
+        if storedAccent == .system { storedAccent = .appDefault }
+        #endif
+        accentColor = storedAccent
         tintedWindow = defaults.boolValue("pref.tintedWindow", default: true)
         messageDensity = defaults.enumValue(MessageDensity.self, "pref.messageDensity") ?? .comfortable
         use24HourTime = defaults.boolValue("pref.use24HourTime", default: false)
@@ -252,19 +257,19 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         case .gray: "Graphite"
         }
     }
-    /// `.appDefault` tints explicitly with the asset AccentColor (the icon
-    /// purple): left as nil, macOS would substitute the user's System Settings
-    /// accent unless that's set to "multicolour". `.system` follows the
-    /// OS-wide accent deliberately (always blue on iOS, which has no such
-    /// setting).
+    /// `.appDefault` tints explicitly with the icon purple: left as nil,
+    /// macOS would substitute the user's System Settings accent unless that's
+    /// set to "multicolour". `.system` follows the OS-wide accent — macOS
+    /// only; iOS has no such setting, so the option is hidden there and any
+    /// stored value coerces to the default at load.
     var color: Color? {
         switch self {
-        case .appDefault: Color("AccentColor")
+        case .appDefault: Color.appAccent
         case .system:
             #if os(macOS)
             Color(nsColor: .controlAccentColor)
             #else
-            Color(uiColor: .tintColor)
+            Color.appAccent
             #endif
         case .blue: .blue
         case .indigo: .indigo
@@ -280,9 +285,8 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         case .gray: .gray
         }
     }
-    /// Concrete swatch for the picker. Default reads the asset directly so it
-    /// shows the icon purple even while another accent tints the environment.
-    var swatch: Color { color ?? Color("AccentColor") }
+    /// Concrete swatch for the picker.
+    var swatch: Color { color ?? Color.appAccent }
 }
 
 enum MessageDensity: String, CaseIterable, Identifiable {

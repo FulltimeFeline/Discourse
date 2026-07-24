@@ -6,6 +6,15 @@ struct AppearanceSettingsView: View {
 
     private let swatchColumns = [GridItem(.adaptive(minimum: 44), spacing: 12)]
 
+    /// iOS has no OS-wide accent to follow, so the System swatch is macOS-only.
+    private var accentChoices: [AccentChoice] {
+        #if os(macOS)
+        AccentChoice.allCases
+        #else
+        AccentChoice.allCases.filter { $0 != .system }
+        #endif
+    }
+
     var body: some View {
         @Bindable var prefs = prefs
         Form {
@@ -23,7 +32,7 @@ struct AppearanceSettingsView: View {
 
             Section {
                 LazyVGrid(columns: swatchColumns, spacing: 12) {
-                    ForEach(AccentChoice.allCases) { choice in
+                    ForEach(accentChoices) { choice in
                         AccentSwatch(choice: choice,
                                      isSelected: prefs.accentColor == choice) {
                             prefs.accentColor = choice

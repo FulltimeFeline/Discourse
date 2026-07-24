@@ -52,6 +52,10 @@ extension Color {
             blue: Double(value & 0xFF) / 255)
     }
 
+    /// The app accent — the icon purple (#9059F1). Hard-coded rather than
+    /// `Color("AccentColor")`: the named-asset lookup proved unreliable on iOS.
+    static let appAccent = Color(red: 144 / 255, green: 89 / 255, blue: 241 / 255)
+
     static var platformWindowBackground: Color {
         #if os(macOS)
         Color(nsColor: .windowBackgroundColor)
